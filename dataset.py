@@ -18,13 +18,13 @@ class Dataset(torch.utils.data.Dataset):
 	def __getitem__(self, index):
 		ID = self.list_IDs[index]
 		img = Image.open("data/image" + str(ID) + "-1.png")
-		resizer = transforms.Resize((224, 224))
+		resizer = transforms.Resize((256, 256))
 		img = resizer(img)
 		# repeat the grey scale image along the channel dimension
 		X = torch.tensor(np.repeat(np.array(img)[:, :, 3][np.newaxis, :, :], 3, 0))
-		y = torch.tensor(self.labels[ID])
-
-		return X, y
+		y = torch.tensor(self.labels[ID][0])
+		cap_len = torch.tensor([self.labels[ID][1]])
+		return X, y, cap_len
 
 
 def read_captions(file):
@@ -57,7 +57,7 @@ def find_max_len(captions):
 	max_len = 0
 	for line in captions:
 		if len(line) > max_len:
-			max_len += 1
+			max_len = len(line)
 	return max_len
 
 
@@ -71,15 +71,15 @@ def convert_sentence_idx(word2idx, sentence, max_len):
 	"""
 
 	max_len = max_len + 2
-	original_len = len(sentence)
 	idx_list = [word2idx["<start>"]]
 	idx_list = idx_list + [word2idx[str(word)] for word in sentence]
 	idx_list.append(word2idx["<end>"])
+	original_len = len(idx_list)
 
 	if original_len < max_len:
 		idx_list = idx_list + [word2idx["<pad>"]] * (max_len - original_len)
 
-	return idx_list
+	return torch.tensor(idx_list, dtype=int), original_len
 
 def convert_corpus_idx(word2idx, corpus, max_len):
 	"""
@@ -91,15 +91,17 @@ def convert_corpus_idx(word2idx, corpus, max_len):
 	"""
 	corpus_idx = []
 	for line in corpus:
-		line_idx = convert_sentence_idx(word2idx, line, max_len)
-		corpus_idx.append(line_idx)
+		line_idx, cap_len = convert_sentence_idx(word2idx, line, max_len)
+		corpus_idx.append((line_idx, cap_len))
 
 	return corpus_idx
 
 if __name__ == '__main__':
 	corpus, word2idx, max_len = read_captions("music_strings.txt")
 	corpus_idx = convert_corpus_idx(word2idx, corpus, max_len)
-	dataset = Dataset(list(range(0, max_len)), corpus_idx)
+	dataset = Dataset(list(range(0, len(corpus_idx))), corpus_idx)
 	print(dataset.__len__())
-	X, y = dataset.__getitem__(7)
+	X, y, cap_len = dataset.__getitem__(2)
 	print(X.shape)
+	print(y.shape)
+	print(cap_len)
