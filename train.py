@@ -8,6 +8,14 @@ from torch.nn.utils.rnn import pack_padded_sequence
 from models import Encoder, DecoderWithAttention
 from utils import *
 from dataset import *
+import argparse
+import sys
+
+PYTHON = sys.executable
+# Set up command line arguments
+parser = argparse.ArgumentParser()
+parser.add_argument('-l', '--label_type', default='char', # 'char' or 'word'
+                    required=False, help='Specify character or word-level prediction')
 
 # Data parameters
 data_folder = '/image_caption/data'  # folder with data files saved by create_input_files.py
@@ -82,7 +90,10 @@ def main():
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
-    corpus, word2idx, max_len = read_captions("music_strings.txt")
+    if (label_type == 'char'):
+        corpus, word2idx, max_len = read_captions("music_strings.txt")
+    elif (label_type == 'word'):
+        corpus, word2idx, max_len = read_captions_word("music_strings.txt")
     corpus_idx = convert_corpus_idx(word2idx, corpus, max_len)
 
     train_loader = torch.utils.data.DataLoader(
@@ -303,4 +314,6 @@ def validate(val_loader, encoder, decoder, criterion):
 
 
 if __name__ == '__main__':
+    args = vars(parser.parse_args())
+    label_type = args['label_type']
     main()

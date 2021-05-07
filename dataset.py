@@ -2,6 +2,7 @@ import torch
 from PIL import Image, ImageOps
 import numpy as np
 from torchvision import transforms
+import itertools
 
 
 class Dataset(torch.utils.data.Dataset):
@@ -42,6 +43,34 @@ def read_captions(file):
 	special = [" ", "'", "-", "#", "/", "<start>", "<end>", "<pad>"]
 	char_list = chars + nums + special
 	word2idx = {char: idx for idx, char in enumerate(char_list)}
+
+	max_len = find_max_len(lines)
+
+	return lines, word2idx, max_len
+
+def read_captions_word(file):
+	"""
+	file: file path
+	return: a list of captions, word2idx mapping, max_length
+	"""
+	with open(file, "r") as fb:
+		lines = fb.readlines()
+	lines = [line.lstrip("tinyNotation: ").rstrip().split(" ") for line in lines]
+
+	pitches_nats = ["C", "D", "E", "F", "G", "A", "B",
+				"c", "d", "e", "f", "g", "a", "b",
+				"c'", "d'", "e'", "f'", "g'", "a'", "b'", 
+				"c''", "d''", "e''", "f''", "g''", "a''", "b''", 
+				"r", "r"]
+	accidentals = ["", "#", "#", "##", "-", "-", "--"]
+	beats = [str(num) for num in [1,2,4,8,16]]
+
+	notes = itertools.product(pitches_nats, accidentals, beats)
+	notes = [note[0]+note[1]+note[2] for note in notes]
+	time_sigs = ["4/4", "2/4", "3/4", "3/8", "6/8", "3/2"]
+	special = ["<start>", "<end>", "<pad>"]
+	word_list = time_sigs + notes + special
+	word2idx = {word: idx for idx, word in enumerate(word_list)}
 
 	max_len = find_max_len(lines)
 
@@ -97,11 +126,11 @@ def convert_corpus_idx(word2idx, corpus, max_len):
 	return corpus_idx
 
 if __name__ == '__main__':
-	corpus, word2idx, max_len = read_captions("music_strings.txt")
+	corpus, word2idx, max_len = read_captions("music_strings_small.txt")
 	corpus_idx = convert_corpus_idx(word2idx, corpus, max_len)
 	dataset = Dataset(list(range(0, len(corpus_idx))), corpus_idx)
 	print(dataset.__len__())
-	X, y, cap_len = dataset.__getitem__(2)
+	X, y, cap_len = dataset.__getitem__(1)
 	print(X.shape)
 	print(y.shape)
 	print(cap_len)
