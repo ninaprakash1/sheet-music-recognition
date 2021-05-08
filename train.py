@@ -61,18 +61,49 @@ def main():
         corpus, word2idx, max_len = read_captions_word("music_strings.txt")
     corpus_idx = convert_corpus_idx(word2idx, corpus, max_len)
 
+    if checkpoint is None:
+        decoder = DecoderWithAttention(attention_dim=attention_dim,
+                                       embed_dim=emb_dim,
+                                       decoder_dim=decoder_dim,
+                                       vocab_size=len(word2idx),
+                                       dropout=dropout)
+        decoder_optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, decoder.parameters()),
+                                             lr=decoder_lr)
+        encoder = Encoder()
+        encoder_optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, encoder.parameters()),
+                                             lr=encoder_lr)
+
+    else:
+        checkpoint = torch.load(checkpoint)
+        start_epoch = checkpoint['epoch'] + 1
+        decoder = checkpoint['decoder']
+        decoder_optimizer = checkpoint['decoder_optimizer']
+        encoder = checkpoint['encoder']
+        encoder_optimizer = checkpoint['encoder_optimizer']
+
+    # Move to GPU, if available
+    decoder = decoder.to(device)
+    encoder = encoder.to(device)
+
+    # Loss function
+    criterion = nn.CrossEntropyLoss().to(device)
+
+    # Custom dataloaders
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+
     train_loader = torch.utils.data.DataLoader(
         Dataset(list(range(0, max_len)), corpus_idx),
         batch_size=32, shuffle=True, num_workers=1, pin_memory=True)
     # val_loader = torch.utils.data.DataLoader(
-        #CaptionDataset(data_folder, data_name, 'VAL', transform=transforms.Compose([normalize])),
-        # batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
+    # CaptionDataset(data_folder, data_name, 'VAL', transform=transforms.Compose([normalize])),
+    # batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
 
     # Epochs
     for epoch in range(start_epoch, epochs):
 
         # Decay learning rate if there is no improvement for 8 consecutive epochs, and terminate training after 20
-        if epochs_since_improvement == 20:
+        if epochs_since_improvement == 50:
             break
         if epochs_since_improvement > 0 and epochs_since_improvement % 8 == 0:
             adjust_learning_rate(decoder_optimizer, 0.8)
@@ -90,16 +121,16 @@ def main():
 
 def train(train_loader, encoder, decoder, criterion, encoder_optimizer, decoder_optimizer, epoch):
     """
-    Performs one epoch's training.
+	Performs one epoch's training.
 
-    :param train_loader: DataLoader for training data
-    :param encoder: encoder model
-    :param decoder: decoder model
-    :param criterion: loss layer
-    :param encoder_optimizer: optimizer to update encoder's weights (if fine-tuning)
-    :param decoder_optimizer: optimizer to update decoder's weights
-    :param epoch: epoch number
-    """
+	:param train_loader: DataLoader for training data
+	:param encoder: encoder model
+	:param decoder: decoder model
+	:param criterion: loss layer
+	:param encoder_optimizer: optimizer to update encoder's weights (if fine-tuning)
+	:param decoder_optimizer: optimizer to update decoder's weights
+	:param epoch: epoch number
+	"""
 
     decoder.train()  # train mode (dropout and batchnorm is used)
     encoder.train()
@@ -166,12 +197,23 @@ def train(train_loader, encoder, decoder, criterion, encoder_optimizer, decoder_
         # Print status
         if i % print_freq == 0:
             print(
-                  'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                  'Top-5 Accuracy {top5.val:.3f} ({top5.avg:.3f})\t'.format(
-                                                                            batch_time=batch_time,
-                                                                            loss=losses, top5=top5accs))
+                'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                'Top-5 Accuracy {top5.val:.3f} ({top5.avg:.3f})\t'.format(
+                    batch_time=batch_time,
+                    loss=losses, top5=top5accs))
+    if epoch % 5 == 0:
+        checkpoint_path = "model/" + f'epoch_{epoch}.pt'
+        torch.save({
+            'epoch': epoch,
+            'encoder_state_dict': encoder.state_dict(),
+            'decoder_state_dict': decoder.state_dict(),
+            'encoder_optimizer_state_dict': encoder_optimizer.state_dict(),
+            'decoder_optimizer_state_dict': decoder_optimizer.state_dict(),
+            'loss': loss,
+        }, checkpoint_path)
 
+        print(f'Saved checkpoint: {checkpoint_path}')
 
 def validate(val_loader, encoder, decoder, criterion):
     """
