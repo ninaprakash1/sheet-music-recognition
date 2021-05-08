@@ -51,13 +51,29 @@ def main():
 
     global best_bleu4, epochs_since_improvement, checkpoint, start_epoch, fine_tune_encoder, data_name, word_map
 
+    # Custom dataloaders
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+
+    if (label_type == 'char'):
+        corpus, word2idx, max_len = read_captions("music_strings.txt")
+    elif (label_type == 'word'):
+        corpus, word2idx, max_len = read_captions_word("music_strings.txt")
+    corpus_idx = convert_corpus_idx(word2idx, corpus, max_len)
+
+    train_loader = torch.utils.data.DataLoader(
+        Dataset(list(range(0, max_len)), corpus_idx),
+        batch_size=32, shuffle=True, num_workers=1, pin_memory=True)
+    # val_loader = torch.utils.data.DataLoader(
+        #CaptionDataset(data_folder, data_name, 'VAL', transform=transforms.Compose([normalize])),
+        # batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
 
     # Initialize / load checkpoint
     if checkpoint is None:
         decoder = DecoderWithAttention(attention_dim=attention_dim,
                                        embed_dim=emb_dim,
                                        decoder_dim=decoder_dim,
-                                       vocab_size=32,
+                                       vocab_size=len(word2idx),# 32,
                                        dropout=dropout)
         decoder_optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, decoder.parameters()),
                                              lr=decoder_lr)
@@ -85,23 +101,6 @@ def main():
 
     # Loss function
     criterion = nn.CrossEntropyLoss().to(device)
-
-    # Custom dataloaders
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-
-    if (label_type == 'char'):
-        corpus, word2idx, max_len = read_captions("music_strings.txt")
-    elif (label_type == 'word'):
-        corpus, word2idx, max_len = read_captions_word("music_strings.txt")
-    corpus_idx = convert_corpus_idx(word2idx, corpus, max_len)
-
-    train_loader = torch.utils.data.DataLoader(
-        Dataset(list(range(0, max_len)), corpus_idx),
-        batch_size=32, shuffle=True, num_workers=1, pin_memory=True)
-    # val_loader = torch.utils.data.DataLoader(
-        #CaptionDataset(data_folder, data_name, 'VAL', transform=transforms.Compose([normalize])),
-        # batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
 
     # Epochs
     for epoch in range(start_epoch, epochs):
