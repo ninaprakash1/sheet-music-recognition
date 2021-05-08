@@ -2,15 +2,17 @@ import torch
 from PIL import Image, ImageOps
 import numpy as np
 from torchvision import transforms
+import os
 import itertools
 
 
 class Dataset(torch.utils.data.Dataset):
 
-	def __init__(self, list_IDs, labels):
+	def __init__(self, data_dir, list_IDs, labels):
 		'Initialization'
 		self.labels = labels
 		self.list_IDs = list_IDs
+		self.data_dir = data_dir
 
 	def __len__(self):
 		'Denotes the total number of samples'
@@ -18,9 +20,13 @@ class Dataset(torch.utils.data.Dataset):
 
 	def __getitem__(self, index):
 		ID = self.list_IDs[index]
-		img = Image.open("data/image" + str(ID) + "-1.png")
-		resizer = transforms.Resize((256, 256))
+		img_name = "image" + str(ID) + "-1.png"
+		img_path = os.path.join(self.data_dir, img_name)
+		img = Image.open(img_path)
+
+		resizer = transforms.Resize((256, 512))
 		img = resizer(img)
+
 		# repeat the grey scale image along the channel dimension
 		X = torch.tensor(np.repeat(np.array(img)[:, :, 3][np.newaxis, :, :], 3, 0))
 		y = torch.tensor(self.labels[ID][0])
@@ -61,8 +67,8 @@ def read_captions_word(file):
 				"c", "d", "e", "f", "g", "a", "b",
 				"c'", "d'", "e'", "f'", "g'", "a'", "b'", 
 				"c''", "d''", "e''", "f''", "g''", "a''", "b''", 
-				"r", "r"]
-	accidentals = ["", "#", "#", "##", "-", "-", "--"]
+				"r"]
+	accidentals = ["", "#", "##", "-", "--"]
 	beats = [str(num) for num in [1,2,4,8,16]]
 
 	notes = itertools.product(pitches_nats, accidentals, beats)
@@ -126,9 +132,9 @@ def convert_corpus_idx(word2idx, corpus, max_len):
 	return corpus_idx
 
 if __name__ == '__main__':
-	corpus, word2idx, max_len = read_captions("music_strings_small.txt")
+	corpus, word2idx, max_len = read_captions_word("music_strings_small.txt")
 	corpus_idx = convert_corpus_idx(word2idx, corpus, max_len)
-	dataset = Dataset(list(range(0, len(corpus_idx))), corpus_idx)
+	dataset = Dataset("data", list(range(0, len(corpus_idx))), corpus_idx)
 	print(dataset.__len__())
 	X, y, cap_len = dataset.__getitem__(1)
 	print(X.shape)
