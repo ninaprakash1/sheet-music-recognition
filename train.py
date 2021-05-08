@@ -53,6 +53,7 @@ def main(args):
     writer = SummaryWriter(log_dir=path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # pad needs to be the last element of word2idx
     if (label_type == 'char'):
         corpus, word2idx, max_len = read_captions(label_file)
     elif (label_type == 'word'):

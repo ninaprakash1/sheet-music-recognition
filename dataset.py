@@ -133,6 +133,7 @@ def convert_corpus_idx(word2idx, corpus, max_len):
 
 if __name__ == '__main__':
 	corpus, word2idx, max_len = read_captions_word("music_strings_small.txt")
+	print(word2idx["<pad>"])
 	corpus_idx = convert_corpus_idx(word2idx, corpus, max_len)
 	dataset = Dataset("data", list(range(0, len(corpus_idx))), corpus_idx)
 	print(dataset.__len__())
