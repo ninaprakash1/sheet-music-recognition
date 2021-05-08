@@ -60,25 +60,25 @@ def main(args):
         corpus, word2idx, max_len = read_captions_word(label_file)
     corpus_idx = convert_corpus_idx(word2idx, corpus, max_len)
 
-    if checkpoint is None:
-        decoder = DecoderWithAttention(attention_dim=att_dim,
-                                       embed_dim=emb_dim,
-                                       decoder_dim=decoder_dim,
-                                       vocab_size=len(word2idx),
-                                       dropout=dropout)
-        decoder_optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, decoder.parameters()),
-                                             lr=decoder_lr)
-        encoder = Encoder()
-        encoder_optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, encoder.parameters()),
-                                             lr=encoder_lr)
 
-    else:
+    decoder = DecoderWithAttention(attention_dim=att_dim,
+                                   embed_dim=emb_dim,
+                                   decoder_dim=decoder_dim,
+                                   vocab_size=len(word2idx),
+                                   dropout=dropout)
+    decoder_optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, decoder.parameters()),
+                                         lr=decoder_lr)
+    encoder = Encoder()
+    encoder_optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, encoder.parameters()),
+                                         lr=encoder_lr)
+
+    if checkpoint:
         checkpoint = torch.load(checkpoint)
         start_epoch = checkpoint['epoch'] + 1
-        decoder = checkpoint['decoder']
-        decoder_optimizer = checkpoint['decoder_optimizer']
-        encoder = checkpoint['encoder']
-        encoder_optimizer = checkpoint['encoder_optimizer']
+        decoder.load_state_dict(checkpoint['decoder_state_dict'])
+        decoder_optimizer.load_state_dict(checkpoint['decoder_optimizer_state_dict'])
+        encoder.load_state_dict(checkpoint['encoder_state_dict'])
+        encoder_optimizer.load_state_dict(checkpoint['encoder_optimizer_state_dict'])
 
     encoder_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=encoder_optimizer, gamma=decay_rate)
     decoder_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=decoder_optimizer, gamma=decay_rate)
@@ -308,5 +308,5 @@ if __name__ == '__main__':
                 batch_size=32,
                 workers=0, encoder_lr=1e-4, decoder_lr=4e-4, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
                 print_freq=100, save_freq=10,
-                checkpoint=None, data_dir="data", label_file="music_strings_small.txt", model_name="base")
+                checkpoint="model/epoch_4.pt", data_dir="data", label_file="music_strings_small.txt", model_name="base")
     main(args)
