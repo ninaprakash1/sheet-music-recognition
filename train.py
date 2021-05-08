@@ -68,40 +68,6 @@ def main():
         #CaptionDataset(data_folder, data_name, 'VAL', transform=transforms.Compose([normalize])),
         # batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
 
-    # Initialize / load checkpoint
-    if checkpoint is None:
-        decoder = DecoderWithAttention(attention_dim=attention_dim,
-                                       embed_dim=emb_dim,
-                                       decoder_dim=decoder_dim,
-                                       vocab_size=len(word2idx),# 32,
-                                       dropout=dropout)
-        decoder_optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, decoder.parameters()),
-                                             lr=decoder_lr)
-        encoder = Encoder()
-        encoder.fine_tune(fine_tune_encoder)
-        encoder_optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, encoder.parameters()),
-                                             lr=encoder_lr) if fine_tune_encoder else None
-
-    else:
-        checkpoint = torch.load(checkpoint)
-        start_epoch = checkpoint['epoch'] + 1
-        epochs_since_improvement = checkpoint['epochs_since_improvement']
-        decoder = checkpoint['decoder']
-        decoder_optimizer = checkpoint['decoder_optimizer']
-        encoder = checkpoint['encoder']
-        encoder_optimizer = checkpoint['encoder_optimizer']
-        if fine_tune_encoder is True and encoder_optimizer is None:
-            encoder.fine_tune(fine_tune_encoder)
-            encoder_optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, encoder.parameters()),
-                                                 lr=encoder_lr)
-
-    # Move to GPU, if available
-    decoder = decoder.to(device)
-    encoder = encoder.to(device)
-
-    # Loss function
-    criterion = nn.CrossEntropyLoss().to(device)
-
     # Epochs
     for epoch in range(start_epoch, epochs):
 
@@ -110,8 +76,7 @@ def main():
             break
         if epochs_since_improvement > 0 and epochs_since_improvement % 8 == 0:
             adjust_learning_rate(decoder_optimizer, 0.8)
-            if fine_tune_encoder:
-                adjust_learning_rate(encoder_optimizer, 0.8)
+            adjust_learning_rate(encoder_optimizer, 0.8)
 
         # One epoch's training
         train(train_loader=train_loader,
@@ -313,6 +278,5 @@ def validate(val_loader, encoder, decoder, criterion):
 
 
 if __name__ == '__main__':
-    args = vars(parser.parse_args())
-    label_type = args['label_type']
+    label_type = "word"
     main()
