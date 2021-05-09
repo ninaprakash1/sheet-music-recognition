@@ -17,7 +17,8 @@ class Encoder(nn.Module):
         resnet = torchvision.models.resnet18(pretrained=False)
         resnet = list(resnet.children())[:-2]
         self.resnet = nn.Sequential(*resnet)
-        self.adaptive_pool = nn.AdaptiveAvgPool2d((encoded_image_size, encoded_image_size))
+        # probably no need to use adaptive pooling if we already have the desired tensor size
+        # self.adaptive_pool = nn.AdaptiveAvgPool2d((encoded_image_size, encoded_image_size))
 
     def forward(self, images):
         """
@@ -25,9 +26,9 @@ class Encoder(nn.Module):
         :param images: images, a tensor of dimensions (batch_size, 3, image_size, image_size)
         :return: encoded images
         """
-        out = self.resnet(images)  # (batch_size, 2048, image_size/32, image_size/32)
-        out = self.adaptive_pool(out)  # (batch_size, 2048, encoded_image_size, encoded_image_size)
-        out = out.permute(0, 2, 3, 1)  # (batch_size, encoded_image_size, encoded_image_size, 2048)
+        out = self.resnet(images)  # (batch_size, 512, image_size/32, image_size/32)
+        # out = self.adaptive_pool(out)  # (batch_size, 512, encoded_image_size, encoded_image_size)
+        out = out.permute(0, 2, 3, 1)  # (batch_size, encoded_image_size, encoded_image_size, 512)
         return out
 
 class Attention(nn.Module):
