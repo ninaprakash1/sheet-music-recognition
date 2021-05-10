@@ -101,6 +101,8 @@ def main(args):
     # CaptionDataset(data_folder, data_name, 'VAL', transform=transforms.Compose([normalize])),
     # batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
 
+    exact_match_losses = []
+
     for epoch in range(start_epoch, epochs):
         # each training epoch
         decoder.train()  # train mode (dropout and batchnorm is used)
@@ -178,7 +180,10 @@ def main(args):
         writer.flush()
 
 
-        # TODO evaluate here.
+        # Exact match evaluation
+        em_loss = exact_match_loss(scores.data, targets.data)
+        exact_match_losses.append(em_loss)
+        print('exact match loss: ', em_loss)
 
         if epoch > 0 and epoch % save_freq == 0:
             checkpoint_path = os.path.join(path, f'epoch_{epoch}.pt')
@@ -189,6 +194,7 @@ def main(args):
                 'encoder_optimizer_state_dict': encoder_optimizer.state_dict(),
                 'decoder_optimizer_state_dict': decoder_optimizer.state_dict(),
                 'loss': losses.val,
+                'em_losses': exact_match_losses,
             }, checkpoint_path)
 
             print(f'Saved checkpoint: {checkpoint_path}')
@@ -308,5 +314,5 @@ if __name__ == '__main__':
                 batch_size=32,
                 workers=0, encoder_lr=1e-4, decoder_lr=4e-4, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
                 print_freq=100, save_freq=10,
-                checkpoint="model/epoch_4.pt", data_dir="data", label_file="music_strings_small.txt", model_name="base")
+                checkpoint=None, data_dir="data", label_file="music_strings.txt", model_name="base")
     main(args)
