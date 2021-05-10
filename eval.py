@@ -167,7 +167,7 @@ if __name__ == '__main__':
                 batch_size=4,
                 workers=0, encoder_lr=1e-4, decoder_lr=1e-4, decay_rate=1, grad_clip=5.0, att_reg=1.0,
                 print_freq=100, save_freq=10,
-                checkpoint="model/base-1/epoch_2.pt", data_dir="data", label_file="music_strings_small.txt", model_name="base", beam_size=5)
+                checkpoint="epoch_2.pt", data_dir="data", label_file="music_strings_small.txt", model_name="base", beam_size=5)
     seqs, ground_truth = evaluate(args)
 
     for compare in zip(seqs, ground_truth):
