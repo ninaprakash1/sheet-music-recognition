@@ -10,11 +10,21 @@ class Encoder(nn.Module):
     Encoder.
     """
 
-    def __init__(self, encoded_image_size=8):
+    def __init__(self, model_size=18):
         super().__init__()
-        self.enc_image_size = encoded_image_size
 
-        resnet = torchvision.models.resnet18(pretrained=False)
+        # resnet 18, 34 output 512 channels
+        # > 34 output 2048 channels
+        resnet = None
+        if model_size == 18:
+            resnet = torchvision.models.resnet18(pretrained=False)
+        elif model_size == 34:
+            resnet = torchvision.models.resnet34(pretrained=False)
+        elif model_size == 50:
+            resnet = torchvision.models.resnet50(pretrained=False)
+        elif model_size == 101:
+            resnet = torchvision.models.resnet101(pretrained=False)
+
         resnet = list(resnet.children())[:-2]
         self.resnet = nn.Sequential(*resnet)
         # probably no need to use adaptive pooling if we already have the desired tensor size

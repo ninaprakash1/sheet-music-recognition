@@ -19,6 +19,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('-l', '--label_type', default='char',  # 'char' or 'word'
                     required=False, help='Specify character or word-level prediction')
 
+
 # TODO an argparse file specifying all default parameters to main().
 
 def main(args):
@@ -53,6 +54,7 @@ def main(args):
     writer = SummaryWriter(log_dir=path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    corpus, word2idx, max_len = None, None, None
     # pad needs to be the last element of word2idx
     if (label_type == 'char'):
         corpus, word2idx, max_len = read_captions(label_file)
@@ -60,18 +62,18 @@ def main(args):
         corpus, word2idx, max_len = read_captions_word(label_file)
     corpus_idx = convert_corpus_idx(word2idx, corpus, max_len)
 
-
     decoder = DecoderWithAttention(attention_dim=att_dim,
                                    embed_dim=emb_dim,
                                    decoder_dim=decoder_dim,
                                    vocab_size=len(word2idx),
                                    dropout=dropout)
-    decoder_optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, decoder.parameters()),
+    decoder_optimizer = torch.optim.Adam(params=decoder.parameters(),
                                          lr=decoder_lr)
     encoder = Encoder()
-    encoder_optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, encoder.parameters()),
+    encoder_optimizer = torch.optim.Adam(params=encoder.parameters(),
                                          lr=encoder_lr)
 
+    step = 0
     if checkpoint:
         checkpoint = torch.load(checkpoint)
         start_epoch = checkpoint['epoch'] + 1
@@ -79,6 +81,7 @@ def main(args):
         decoder_optimizer.load_state_dict(checkpoint['decoder_optimizer_state_dict'])
         encoder.load_state_dict(checkpoint['encoder_state_dict'])
         encoder_optimizer.load_state_dict(checkpoint['encoder_optimizer_state_dict'])
+        step = checkpoint["step"]
 
     encoder_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=encoder_optimizer, gamma=decay_rate)
     decoder_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=decoder_optimizer, gamma=decay_rate)
@@ -94,91 +97,107 @@ def main(args):
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
+    # TODO might want to split the data into train, val, test, or we can just generate more test data
+    data = Dataset(data_dir, list(range(0, len(corpus))), corpus_idx)
+    split = [int(len(data) * 0.8), int(len(data) * 0.2)]
+    train_data, val_data = torch.utils.data.dataset.random_split(data, split)
+
     train_loader = torch.utils.data.DataLoader(
-        Dataset(data_dir, list(range(0, max_len)), corpus_idx),
-        batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
-    # val_loader = torch.utils.data.DataLoader(
-    # CaptionDataset(data_folder, data_name, 'VAL', transform=transforms.Compose([normalize])),
-    # batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
+        train_data, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
+
+    val_loader = torch.utils.data.DataLoader(
+        val_data, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
 
     for epoch in range(start_epoch, epochs):
-        # each training epoch
-        decoder.train()  # train mode (dropout and batchnorm is used)
-        encoder.train()
 
         batch_time = AverageMeter()  # forward prop. + back prop. time
         data_time = AverageMeter()  # data loading time
         losses = AverageMeter()  # loss (per word decoded)
         top5accs = AverageMeter()  # top5 accuracy
+        EM = AverageMeter()
 
         start = time.time()
 
         # Batches
-        for i, (imgs, caps, caplens) in enumerate(train_loader):
-            data_time.update(time.time() - start)
+        with torch.enable_grad(), tqdm(total=len(train_data), position=0, leave=True) as progress_bar:
+            for i, (imgs, caps, caplens) in enumerate(train_loader):
 
-            # Move to GPU, if available
-            imgs = imgs.to(device)
-            caps = caps.to(device)
-            caplens = caplens.to(device)
+                data_time.update(time.time() - start)
 
-            # Forward prop.
-            imgs = encoder(imgs.float())
-            scores, caps_sorted, decode_lengths, alphas, sort_ind = decoder(imgs, caps, caplens)
+                # Move to GPU, if available
+                imgs = imgs.to(device)
+                caps = caps.to(device)
+                caplens = caplens.to(device)
 
-            # Since we decoded starting with <start>, the targets are all words after <start>, up to <end>
-            targets = caps_sorted[:, 1:]
+                # Forward prop.
+                imgs = encoder(imgs.float())
+                scores, caps_sorted, decode_lengths, alphas, sort_ind = decoder(imgs, caps, caplens)
+                # Since we decoded starting with <start>, the targets are all words after <start>, up to <end>
+                targets = caps_sorted[:, 1:]
 
-            # Remove timesteps that we didn't decode at, or are pads
-            # pack_padded_sequence is an easy trick to do this
-            scores = pack_padded_sequence(scores, decode_lengths, batch_first=True)
-            targets = pack_padded_sequence(targets, decode_lengths, batch_first=True)
+                # Remove timesteps that we didn't decode at, or are pads
+                # pack_padded_sequence is an easy trick to do this
+                scores = pack_padded_sequence(scores, decode_lengths, batch_first=True)
+                targets = pack_padded_sequence(targets, decode_lengths, batch_first=True)
 
-            # Calculate loss
-            loss = criterion(scores.data, targets.data)
+                # Calculate loss
+                loss = criterion(scores.data, targets.data)
 
-            # Add doubly stochastic attention regularization
-            loss += att_reg * ((1. - alphas.sum(dim=1)) ** 2).mean()
+                # Add doubly stochastic attention regularization
+                loss += att_reg * ((1. - alphas.sum(dim=1)) ** 2).mean()
 
-            # Back prop.
-            decoder_optimizer.zero_grad()
-            encoder_optimizer.zero_grad()
-            loss.backward()
+                # Back prop.
+                decoder_optimizer.zero_grad()
+                encoder_optimizer.zero_grad()
+                loss.backward()
 
-            clip_gradient(decoder_optimizer, grad_clip)
-            clip_gradient(encoder_optimizer, grad_clip)
+                clip_gradient(decoder_optimizer, grad_clip)
+                clip_gradient(encoder_optimizer, grad_clip)
 
-            decoder_optimizer.step()
-            encoder_optimizer.step()
+                decoder_optimizer.step()
+                encoder_optimizer.step()
 
-            # Keep track of metrics
-            top5 = accuracy(scores.data, targets.data, 5)
-            losses.update(loss.item(), sum(decode_lengths))
-            top5accs.update(top5, sum(decode_lengths))
-            batch_time.update(time.time() - start)
+                # Keep track of metrics
+                top5 = accuracy(scores.data, targets.data, 5)
+                losses.update(loss.item(), sum(decode_lengths))
+                top5accs.update(top5, sum(decode_lengths))
+                batch_time.update(time.time() - start)
+                em_loss = exact_match_loss(scores.data, targets.data)
+                top1 = accuracy(scores.data, targets.data, 1)
+                print(em_loss, top1)
+                EM.update(em_loss, sum(decode_lengths))
 
-            start = time.time()
+                start = time.time()
 
-            # Print status
-            if i % print_freq == 0:
-                print(
-                    'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                    'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                    'Top-5 Accuracy {top5.val:.3f} ({top5.avg:.3f})\t'.format(
-                        batch_time=batch_time,
-                        loss=losses, top5=top5accs))
+                progress_bar.update(batch_size)
+                progress_bar.set_postfix(mode="train", epoch=epoch,
+                                         NLL=losses.val)
+
+                step += batch_size
+
+                # Print status
+                if i != 0 and i % print_freq == 0:
+                    print('Train\t'
+                        'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                        'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                        'Top-5 Accuracy {top5.val:.3f} ({top5.avg:.3f})\t'
+                        'EM {EM.val:.3f}'.format(
+                            batch_time=batch_time,
+                            loss=losses, top5=top5accs, EM=EM))
+
+            # log to Tensorboard
+            writer.add_scalar("train/loss", losses.val, step)
+            writer.add_scalar("train/top five accuracy", top5accs.val, step)
+            writer.add_scalar("train/EM", EM.val, step)
+            writer.add_scalar("train/encoder_lr", encoder_optimizer.param_groups[0]["lr"], step)
+            writer.add_scalar("train/decoder_lr", decoder_optimizer.param_groups[0]["lr"], step)
+            writer.flush()
 
 
-        # log to Tensorboard
-        writer.add_scalar("train/loss", losses.val, epoch)
-        writer.add_scalar("train/top five accuracy", top5accs.val, epoch)
-        writer.add_scalar("train/encoder_lr", encoder_optimizer.param_groups[0]["lr"], epoch)
-        writer.add_scalar("train/decoder_lr", decoder_optimizer.param_groups[0]["lr"], epoch)
-
-        writer.flush()
-
-
-        # TODO evaluate here.
+        val_loss, val_top5, val_top = validate(val_loader, encoder, decoder, criterion, device, att_reg, epoch)
+        writer.add_scalar("val/loss", val_loss, step)
+        writer.add_scalar("val/top five accuracy", val_top5, step)
+        writer.add_scalar("val/EM", val_top, step)
 
         if epoch > 0 and epoch % save_freq == 0:
             checkpoint_path = os.path.join(path, f'epoch_{epoch}.pt')
@@ -193,12 +212,11 @@ def main(args):
 
             print(f'Saved checkpoint: {checkpoint_path}')
 
-        encoder_lr_scheduler.step()
-        decoder_lr_scheduler.step()
+            encoder_lr_scheduler.step()
+            decoder_lr_scheduler.step()
 
 
-
-def validate(val_loader, encoder, decoder, criterion):
+def validate(val_loader, encoder, decoder, criterion, device, att_reg, epoch):
     """
     Performs one epoch's validation.
 
@@ -206,101 +224,56 @@ def validate(val_loader, encoder, decoder, criterion):
     :param encoder: encoder model
     :param decoder: decoder model
     :param criterion: loss layer
-    :return: BLEU-4 score
     """
-    decoder.eval()  # eval mode (no dropout or batchnorm)
-    if encoder is not None:
-        encoder.eval()
 
     batch_time = AverageMeter()
     losses = AverageMeter()
+    top5accs = AverageMeter()  # top5 accuracy
+    topacc = AverageMeter()
 
     start = time.time()
 
-    references = list()  # references (true captions) for calculating BLEU-4 score
-    hypotheses = list()  # hypotheses (predictions)
+    with torch.no_grad(), \
+            tqdm(total=len(val_loader.dataset), position=0, leave=True) as progress_bar:
+        for i, (imgs, caps, caplens) in enumerate(val_loader):
 
-    # explicitly disable gradient calculation to avoid CUDA memory error
-    # solves the issue #57
-    with torch.no_grad():
-        # Batches
-        for i, (imgs, caps, caplens, allcaps) in enumerate(val_loader):
-
-            # Move to device, if available
             imgs = imgs.to(device)
             caps = caps.to(device)
             caplens = caplens.to(device)
 
-            # Forward prop.
-            if encoder is not None:
-                imgs = encoder(imgs)
+            imgs = encoder(imgs.float())
             scores, caps_sorted, decode_lengths, alphas, sort_ind = decoder(imgs, caps, caplens)
 
-            # Since we decoded starting with <start>, the targets are all words after <start>, up to <end>
             targets = caps_sorted[:, 1:]
 
-            # Remove timesteps that we didn't decode at, or are pads
-            # pack_padded_sequence is an easy trick to do this
-            scores_copy = scores.clone()
-            scores, _ = pack_padded_sequence(scores, decode_lengths, batch_first=True)
-            targets, _ = pack_padded_sequence(targets, decode_lengths, batch_first=True)
+            scores = pack_padded_sequence(scores, decode_lengths, batch_first=True)
+            targets = pack_padded_sequence(targets, decode_lengths, batch_first=True)
 
             # Calculate loss
-            loss = criterion(scores, targets)
+            loss = criterion(scores.data, targets.data)
 
             # Add doubly stochastic attention regularization
-            loss += alpha_c * ((1. - alphas.sum(dim=1)) ** 2).mean()
-
+            loss += att_reg * ((1. - alphas.sum(dim=1)) ** 2).mean()
             # Keep track of metrics
             losses.update(loss.item(), sum(decode_lengths))
-
             batch_time.update(time.time() - start)
-
             start = time.time()
 
-            if i % print_freq == 0:
-                print('Validation: [{0}/{1}]\t'
-                      'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                      'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                      'Top-5 Accuracy {top5.val:.3f} ({top5.avg:.3f})\t'.format(i, len(val_loader),
-                                                                                batch_time=batch_time,
-                                                                                loss=losses, top5=top5accs))
+            progress_bar.update(val_loader.batch_size)
+            progress_bar.set_postfix(mode="val", epoch=epoch, NLL=losses.val)
 
-            # Store references (true captions), and hypothesis (prediction) for each image
-            # If for n images, we have n hypotheses, and references a, b, c... for each image, we need -
-            # references = [[ref1a, ref1b, ref1c], [ref2a, ref2b], ...], hypotheses = [hyp1, hyp2, ...]
+            top5 = accuracy(scores.data, targets.data, 5)
+            top5accs.update(top5, sum(decode_lengths))
+            top = accuracy(scores.data, targets.data, 1)
+            topacc.update(top, sum(decode_lengths))
 
-            # References
-            allcaps = allcaps[sort_ind]  # because images were sorted in the decoder
-            for j in range(allcaps.shape[0]):
-                img_caps = allcaps[j].tolist()
-                img_captions = list(
-                    map(lambda c: [w for w in c if w not in {word_map['<start>'], word_map['<pad>']}],
-                        img_caps))  # remove <start> and pads
-                references.append(img_captions)
-
-            # Hypotheses
-            _, preds = torch.max(scores_copy, dim=2)
-            preds = preds.tolist()
-            temp_preds = list()
-            for j, p in enumerate(preds):
-                temp_preds.append(preds[j][:decode_lengths[j]])  # remove pads
-            preds = temp_preds
-            hypotheses.extend(preds)
-
-            assert len(references) == len(hypotheses)
-
-        # Calculate BLEU-4 scores
-        bleu4 = corpus_bleu(references, hypotheses)
-
-        print(
-            '\n * LOSS - {loss.avg:.3f}, TOP-5 ACCURACY - {top5.avg:.3f}, BLEU-4 - {bleu}\n'.format(
-                loss=losses,
-                top5=top5accs,
-                bleu=bleu4))
-
-    return bleu4
-
+    print('Validation\t'
+          'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+          'top5 {top5.val:.3f}\t'
+          'Exact match {top.val:.3f}\t'.format(
+                                           batch_time=batch_time,
+                                           loss=losses, top5=top5accs, top=topacc))
+    return losses.val, top5accs.val, topacc.val
 
 if __name__ == '__main__':
     # remember to specify a new model_dir each time. otherwise previous checkpoints will be overwritten
@@ -308,5 +281,5 @@ if __name__ == '__main__':
                 batch_size=32,
                 workers=0, encoder_lr=1e-4, decoder_lr=4e-4, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
                 print_freq=100, save_freq=10,
-                checkpoint="model/epoch_4.pt", data_dir="data", label_file="music_strings_small.txt", model_name="base")
+                checkpoint=None, data_dir="data", label_file="music_strings_small.txt", model_name="base")
     main(args)
