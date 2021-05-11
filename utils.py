@@ -11,7 +11,7 @@ def exact_match(scores, targets):
     num_samples, num_classes = scores.shape
     pred = np.array([np.argmax(scores[i]) for i in range(num_samples)])
     num_matches = np.sum(pred == targets)
-    return - num_matches / num_samples
+    return num_matches / num_samples
 
 def create_input_files(dataset, karpathy_json_path, image_folder, captions_per_image, min_word_freq, output_folder,
                        max_len=100):
