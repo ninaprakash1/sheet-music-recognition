@@ -6,21 +6,46 @@ from collections import Counter
 from random import seed, choice, sample
 from torch import tensor
 
-<<<<<<< HEAD
+
 def exact_match(scores, targets):
     scores, targets = scores.detach().numpy(), targets.detach().numpy()
     num_samples, num_classes = scores.shape
     pred = np.array([np.argmax(scores[i]) for i in range(num_samples)])
     num_matches = np.sum(pred == targets)
     return num_matches / num_samples
-=======
-def exact_match_loss(scores, targets):
-	scores, targets = scores.detach().numpy(), targets.detach().numpy()
-	num_samples, num_classes = scores.shape
-	pred = np.array([np.argmax(scores[i]) for i in range(num_samples)])
-	num_matches = np.sum(pred == targets)
-	return (num_samples - num_matches) / num_samples
->>>>>>> a497e5182fba5d53c6a62769fd5aab3dd16d448d
+
+
+def scores2string(scores, idx2word):
+	scores = scores.detach().numpy()
+	preds = np.array([np.argmax(scores[i]) for i in range(scores.shape[0])])
+	words = []
+	for p in preds:
+		words.append(idx2word[int(p)])
+	return words
+
+
+def pitch_match(pred_words, target_words):
+	def get_pitch(word):
+		if word[-1] == '6':
+			return word[:-2]
+		else:
+			return word[:-1]
+
+	pred_pitches, target_pitches = [], []
+	for w in pred_words:
+		pred_pitches.append(get_pitch(w))
+	for w in target_words:
+		target_pitches.append(get_pitch(w))
+	matches = 0
+	for i in range(len(pred_pitches)):
+		if pred_pitches[i] == target_pitches[i]:
+				matches += 1
+	else:
+		for i in range(len(target_pitches)):
+			if pred_pitches[i] == target_pitches[i]:
+				matches += 1	
+	return 	matches / min(len(pred_pitches), len(target_pitches))
+
 
 def create_input_files(dataset, karpathy_json_path, image_folder, captions_per_image, min_word_freq, output_folder,
                        max_len=100):
@@ -277,15 +302,13 @@ def adjust_learning_rate(optimizer, shrink_factor):
 
 
 def accuracy(scores, targets, k):
-	"""
+    """
     Computes top-k accuracy, from predicted and true labels.
     :param scores: scores from the model
     :param targets: true labels
     :param k: k in top-k accuracy
     :return: top-k accuracy
     """
-
-<<<<<<< HEAD
     batch_size = targets.size(0)
     _, ind = scores.topk(k, 1, True, True)
     correct = ind.eq(targets.view(-1, 1).expand_as(ind))
@@ -305,24 +328,3 @@ def create_checkpoint_dir(model_name):
     os.makedirs(path)
 
     return path
-=======
-	batch_size = targets.size(0)
-	_, ind = scores.topk(k, 1, True, True)
-	correct = ind.eq(targets.view(-1, 1).expand_as(ind))
-	correct_total = correct.view(-1).float().sum()  # 0D tensor
-	return correct_total.item() * (100.0 / batch_size)
-
-
-def create_checkpoint_dir(model_name):
-	if not os.path.exists("model"):
-		os.makedirs("model")
-	path = os.path.join("model", model_name)
-	if os.path.exists(path):
-		i = 1
-		while os.path.exists(path + "-" + str(i)):
-			i += 1
-		path = path + "-" + str(i)
-	os.makedirs(path)
-
-	return path
->>>>>>> a497e5182fba5d53c6a62769fd5aab3dd16d448d

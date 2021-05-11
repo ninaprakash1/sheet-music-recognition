@@ -57,7 +57,7 @@ def main(args):
     if (label_type == 'char'):
         corpus, word2idx, max_len = read_captions(label_file)
     elif (label_type == 'word'):
-        corpus, word2idx, max_len = read_captions_word(label_file)
+        corpus, word2idx, idx2word, max_len = read_captions_word(label_file)
     corpus_idx = convert_corpus_idx(word2idx, corpus, max_len)
 
 
@@ -135,6 +135,11 @@ def main(args):
             # pack_padded_sequence is an easy trick to do this
             scores = pack_padded_sequence(scores, decode_lengths, batch_first=True)
             targets = pack_padded_sequence(targets, decode_lengths, batch_first=True)
+            target_words = []
+            for p in targets.data:
+                target_words.append(idx2word[int(p)])
+            print("scores:", scores2string(scores.data, idx2word))
+            print("targets:", target_words)
 
             # Calculate loss
             loss = criterion(scores.data, targets.data)
@@ -182,6 +187,7 @@ def main(args):
 
         # Exact match evaluation
         em_loss = exact_match_loss(scores.data, targets.data)
+
         exact_match_losses.append(em_loss)
         print('exact match loss: ', em_loss)
 
@@ -314,5 +320,5 @@ if __name__ == '__main__':
                 batch_size=32,
                 workers=0, encoder_lr=1e-4, decoder_lr=4e-4, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
                 print_freq=100, save_freq=10,
-                checkpoint=None, data_dir="data", label_file="music_strings.txt", model_name="base")
+                checkpoint=None, data_dir="data1", label_file="music_strings1.txt", model_name="base")
     main(args)

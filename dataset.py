@@ -77,10 +77,11 @@ def read_captions_word(file):
 	special = ["<start>", "<end>", "<pad>"]
 	word_list = time_sigs + notes + special
 	word2idx = {word: idx for idx, word in enumerate(word_list)}
+	idx2word = {idx: word for idx, word in enumerate(word_list)}
 
 	max_len = find_max_len(lines)
 
-	return lines, word2idx, max_len
+	return lines, word2idx, idx2word, max_len
 
 
 # need to pad each caption to the maximum length of the caption in the dataset
