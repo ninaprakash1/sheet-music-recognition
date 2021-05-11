@@ -4,13 +4,19 @@ import json
 from tqdm import tqdm
 from collections import Counter
 from random import seed, choice, sample
+from torch import tensor
 
+def exact_match(scores, targets):
+    scores, targets = scores.detach().numpy(), targets.detach().numpy()
+    num_samples, num_classes = scores.shape
+    pred = np.array([np.argmax(scores[i]) for i in range(num_samples)])
+    num_matches = np.sum(pred == targets)
+    return - num_matches / num_samples
 
 def create_input_files(dataset, karpathy_json_path, image_folder, captions_per_image, min_word_freq, output_folder,
                        max_len=100):
     """
     Creates input files for training, validation, and test data.
-
     :param dataset: name of dataset, one of 'coco', 'flickr8k', 'flickr30k'
     :param karpathy_json_path: path of Karpathy JSON file with splits and captions
     :param image_folder: folder with downloaded images
@@ -146,7 +152,6 @@ def create_input_files(dataset, karpathy_json_path, image_folder, captions_per_i
 def init_embedding(embeddings):
     """
     Fills embedding tensor with values from the uniform distribution.
-
     :param embeddings: embedding tensor
     """
     bias = np.sqrt(3.0 / embeddings.size(1))
@@ -156,7 +161,6 @@ def init_embedding(embeddings):
 def load_embeddings(emb_file, word_map):
     """
     Creates an embedding tensor for the specified word map, for loading into the model.
-
     :param emb_file: file containing embeddings (stored in GloVe format)
     :param word_map: word map
     :return: embeddings in the same order as the words in the word map, dimension of embeddings
@@ -192,7 +196,6 @@ def load_embeddings(emb_file, word_map):
 def clip_gradient(optimizer, grad_clip):
     """
     Clips gradients computed during backpropagation to avoid explosion of gradients.
-
     :param optimizer: optimizer with the gradients to be clipped
     :param grad_clip: clip value
     """
@@ -206,7 +209,6 @@ def save_checkpoint(data_name, epoch, epochs_since_improvement, encoder, decoder
                     bleu4, is_best):
     """
     Saves model checkpoint.
-
     :param data_name: base name of processed dataset
     :param epoch: epoch number
     :param epochs_since_improvement: number of epochs since last improvement in BLEU-4 score
@@ -255,7 +257,6 @@ class AverageMeter(object):
 def adjust_learning_rate(optimizer, shrink_factor):
     """
     Shrinks learning rate by a specified factor.
-
     :param optimizer: optimizer whose learning rate must be shrunk.
     :param shrink_factor: factor in interval (0, 1) to multiply learning rate with.
     """
@@ -269,7 +270,6 @@ def adjust_learning_rate(optimizer, shrink_factor):
 def accuracy(scores, targets, k):
     """
     Computes top-k accuracy, from predicted and true labels.
-
     :param scores: scores from the model
     :param targets: true labels
     :param k: k in top-k accuracy
@@ -281,3 +281,17 @@ def accuracy(scores, targets, k):
     correct = ind.eq(targets.view(-1, 1).expand_as(ind))
     correct_total = correct.view(-1).float().sum()  # 0D tensor
     return correct_total.item() * (100.0 / batch_size)
+
+
+def create_checkpoint_dir(model_name):
+    if not os.path.exists("model"):
+        os.makedirs("model")
+    path = os.path.join("model", model_name)
+    if os.path.exists(path):
+        i = 1
+        while os.path.exists(path + "-" + str(i)):
+            i += 1
+        path = path + "-" + str(i)
+    os.makedirs(path)
+
+    return path
