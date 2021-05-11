@@ -56,8 +56,9 @@ def evaluate(args):
         Dataset(data_dir, list(range(0, 4)), corpus_idx),
         batch_size=1, shuffle=True, num_workers=0, pin_memory=True)
 
-    sequences = []
-    ground_truth = []
+    # sequences = []
+    # ground_truth = []
+    counter = 0
 
     with torch.no_grad():
         for i, (image, caps, caplens) in enumerate(
@@ -92,7 +93,6 @@ def evaluate(args):
             # Start decoding
             step = 1
             h, c = decoder.init_hidden_state(encoder_out)
-
             # s is a number less than or equal to k, because sequences are removed from this process once they hit <end>
             while True:
 
@@ -153,23 +153,20 @@ def evaluate(args):
 
             i = complete_seqs_scores.index(max(complete_seqs_scores))
             seq = complete_seqs[i]
-            sequences.append(seq)
-
-            ground_truth.append(caps.squeeze()[:caplens])
+            if seq == caps.squeeze()[:caplens].tolist():
+                counter += 1
 
     # compute exact match
     # EM = accuracy()
-    return sequences, ground_truth
+    return counter / len(test_loader.dataset)
 
 
 if __name__ == '__main__':
-    args = dict(label_type="word", emb_dim=20, decoder_dim=300, att_dim=300, dropout=0.5, start_epoch=0, epochs=120,
+    args = dict(label_type="word", emb_dim=20, decoder_dim=300, att_dim=300, dropout=0.5,
                 batch_size=4,
                 workers=0, encoder_lr=1e-4, decoder_lr=1e-4, decay_rate=1, grad_clip=5.0, att_reg=1.0,
                 print_freq=100, save_freq=10,
-                checkpoint="epoch_2.pt", data_dir="data", label_file="music_strings_small.txt", model_name="base", beam_size=5)
-    seqs, ground_truth = evaluate(args)
-
-    for compare in zip(seqs, ground_truth):
-        print(compare)
+                checkpoint="model/base-2/epoch_2.pt", data_dir="data", label_file="music_strings_small.txt", model_name="base", beam_size=10)
+    EM = evaluate(args)
+    print("EM: " + str(EM))
 

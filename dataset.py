@@ -30,6 +30,7 @@ class Dataset(torch.utils.data.Dataset):
 		# repeat the grey scale image along the channel dimension
 		X = torch.tensor(np.repeat(np.array(img)[:, :, 3][np.newaxis, :, :], 3, 0))
 		y = self.labels[ID][0]
+		# extract cap_len for teach forcing
 		cap_len = torch.tensor([self.labels[ID][1]])
 		return X, y, cap_len
 

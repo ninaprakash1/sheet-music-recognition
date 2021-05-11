@@ -1,11 +1,13 @@
 import time
+import random
+
 import torch.backends.cudnn as cudnn
 import torch.optim
 import torch.utils.data
 import torchvision.transforms as transforms
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence
-from torch.utils.tensorboard import SummaryWriter
+import torch.nn.functional as F
 from models import Encoder, DecoderWithAttention
 from utils import *
 from dataset import *
@@ -47,6 +49,8 @@ def main(args):
     data_dir = args["data_dir"]
     label_file = args["label_file"]
     model_name = args["model_name"]
+    layers = args["layers"]
+    beam_size = args["beam_size"]
 
     # make checkpoint path
     path = create_checkpoint_dir(model_name)
@@ -69,7 +73,7 @@ def main(args):
                                    dropout=dropout)
     decoder_optimizer = torch.optim.Adam(params=decoder.parameters(),
                                          lr=decoder_lr)
-    encoder = Encoder()
+    encoder = Encoder(int(layers))
     encoder_optimizer = torch.optim.Adam(params=encoder.parameters(),
                                          lr=encoder_lr)
 
@@ -99,6 +103,17 @@ def main(args):
 
     # TODO might want to split the data into train, val, test, or we can just generate more test data
     data = Dataset(data_dir, list(range(0, len(corpus))), corpus_idx)
+
+    # num = len(data)  # how many total elements you have
+    # val_num  = int(num * .2)
+    # idx = list(range(num))  # indices to all elements
+    # random.shuffle(idx)  # in-place shuffle the indices to facilitate random splitting
+    # train_idx = idx[val_num:]
+    # val_idx = idx[:val_num]
+
+    # train_data = data
+    # val_data = torch.utils.data.Subset(data, val_idx)
+
     split = [int(len(data) * 0.8), int(len(data) * 0.2)]
     train_data, val_data = torch.utils.data.dataset.random_split(data, split)
 
@@ -106,7 +121,11 @@ def main(args):
         train_data, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
 
     val_loader = torch.utils.data.DataLoader(
-        val_data, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
+        val_data, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
+
+    # loader used for beam search for validation
+    beam_loader = torch.utils.data.DataLoader(
+        val_data, batch_size=1, shuffle=True, num_workers=0, pin_memory=True)
 
     for epoch in range(start_epoch, epochs):
 
@@ -117,6 +136,9 @@ def main(args):
         EM = AverageMeter()
 
         start = time.time()
+
+        encoder.train()
+        decoder.train()
 
         # Batches
         with torch.enable_grad(), tqdm(total=len(train_data), position=0, leave=True) as progress_bar:
@@ -162,42 +184,47 @@ def main(args):
                 losses.update(loss.item(), sum(decode_lengths))
                 top5accs.update(top5, sum(decode_lengths))
                 batch_time.update(time.time() - start)
-                em_loss = exact_match_loss(scores.data, targets.data)
                 top1 = accuracy(scores.data, targets.data, 1)
-                print(em_loss, top1)
-                EM.update(em_loss, sum(decode_lengths))
+                EM.update(top1, sum(decode_lengths))
 
                 start = time.time()
 
                 progress_bar.update(batch_size)
                 progress_bar.set_postfix(mode="train", epoch=epoch,
-                                         NLL=losses.val)
+                                         loss=losses.val, Top5=top5accs.val, EM=EM.val)
 
                 step += batch_size
 
                 # Print status
                 if i != 0 and i % print_freq == 0:
                     print('Train\t'
-                        'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                        'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                        'Top-5 Accuracy {top5.val:.3f} ({top5.avg:.3f})\t'
-                        'EM {EM.val:.3f}'.format(
-                            batch_time=batch_time,
-                            loss=losses, top5=top5accs, EM=EM))
+                          'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                          'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                          'Top-5 Accuracy {top5.val:.3f} ({top5.avg:.3f})\t'
+                          'EM {EM.val:.3f}'.format(
+                        batch_time=batch_time,
+                        loss=losses, top5=top5accs, EM=EM))
 
-            # log to Tensorboard
-            writer.add_scalar("train/loss", losses.val, step)
-            writer.add_scalar("train/top five accuracy", top5accs.val, step)
-            writer.add_scalar("train/EM", EM.val, step)
-            writer.add_scalar("train/encoder_lr", encoder_optimizer.param_groups[0]["lr"], step)
-            writer.add_scalar("train/decoder_lr", decoder_optimizer.param_groups[0]["lr"], step)
-            writer.flush()
+                # log to Tensorboard
+                writer.add_scalar("train/loss", losses.val, step)
+                writer.add_scalar("train/top five accuracy", top5accs.val, step)
+                writer.add_scalar("train/EM", EM.val, step)
+                writer.add_scalar("train/encoder_lr", encoder_optimizer.param_groups[0]["lr"], step)
+                writer.add_scalar("train/decoder_lr", decoder_optimizer.param_groups[0]["lr"], step)
+                writer.flush()
 
-
-        val_loss, val_top5, val_top = validate(val_loader, encoder, decoder, criterion, device, att_reg, epoch)
+        val_loss, val_top5, val_top, em = validate(val_loader, beam_loader, encoder, decoder, criterion,
+                                               device, att_reg, epoch, beam_size=beam_size, word2idx=word2idx)
         writer.add_scalar("val/loss", val_loss, step)
         writer.add_scalar("val/top five accuracy", val_top5, step)
         writer.add_scalar("val/EM", val_top, step)
+        writer.add_scalar("val/true EM", em, step)
+        print('\nValidation\t'
+              'Loss {loss:.4f}\t'
+              'top5 {top5:.3f}\t'
+              'EM {top:.3f}\ttrue EM {em:.3f}'.format(
+            loss=val_loss, top5=val_top5, top=val_top, em=em))
+
 
         if epoch > 0 and epoch % save_freq == 0:
             checkpoint_path = os.path.join(path, f'epoch_{epoch}.pt')
@@ -212,11 +239,11 @@ def main(args):
 
             print(f'Saved checkpoint: {checkpoint_path}')
 
-            encoder_lr_scheduler.step()
-            decoder_lr_scheduler.step()
+        encoder_lr_scheduler.step()
+        decoder_lr_scheduler.step()
 
 
-def validate(val_loader, encoder, decoder, criterion, device, att_reg, epoch):
+def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_reg, epoch, beam_size=10, word2idx=None):
     """
     Performs one epoch's validation.
 
@@ -233,10 +260,12 @@ def validate(val_loader, encoder, decoder, criterion, device, att_reg, epoch):
 
     start = time.time()
 
+    encoder.eval()
+    decoder.eval()
+
     with torch.no_grad(), \
             tqdm(total=len(val_loader.dataset), position=0, leave=True) as progress_bar:
         for i, (imgs, caps, caplens) in enumerate(val_loader):
-
             imgs = imgs.to(device)
             caps = caps.to(device)
             caplens = caplens.to(device)
@@ -261,25 +290,121 @@ def validate(val_loader, encoder, decoder, criterion, device, att_reg, epoch):
 
             progress_bar.update(val_loader.batch_size)
             progress_bar.set_postfix(mode="val", epoch=epoch, NLL=losses.val)
-
             top5 = accuracy(scores.data, targets.data, 5)
             top5accs.update(top5, sum(decode_lengths))
             top = accuracy(scores.data, targets.data, 1)
             topacc.update(top, sum(decode_lengths))
 
-    print('Validation\t'
-          'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-          'top5 {top5.val:.3f}\t'
-          'Exact match {top.val:.3f}\t'.format(
-                                           batch_time=batch_time,
-                                           loss=losses, top5=top5accs, top=topacc))
-    return losses.val, top5accs.val, topacc.val
+    # start computing true EM
+    counter = 0
+    with torch.no_grad():
+        for i, (image, caps, caplens) in enumerate(
+                tqdm(beam_loader, desc="EVALUATING AT BEAM SIZE " + str(beam_size), position=0, leave=True)):
+
+            k = beam_size
+
+            # Move to GPU device, if available
+            image = image.to(device)  # (1, 3, 256, 256)
+
+            encoder_out = encoder(image.float())  # (1, enc_image_size, enc_image_size, encoder_dim)
+            encoder_dim = encoder_out.size(3)
+
+            encoder_out = encoder_out.view(1, -1, encoder_dim)  # (1, num_pixels, encoder_dim)
+            num_pixels = encoder_out.size(1)
+
+            encoder_out = encoder_out.expand(k, num_pixels, encoder_dim)  # (k, num_pixels, encoder_dim)
+
+            # Tensor to store top k previous words at each step; now they're just <start>
+            k_prev_words = torch.LongTensor([[word2idx['<start>']]] * k).to(device)  # (k, 1)
+
+            # Tensor to store top k sequences; now they're just <start>
+            seqs = k_prev_words  # (k, 1)
+
+            # Tensor to store top k sequences' scores; now they're just 0
+            top_k_scores = torch.zeros(k, 1).to(device)  # (k, 1)
+
+            # Lists to store completed sequences and scores
+            complete_seqs = list()
+            complete_seqs_scores = list()
+
+            # Start decoding
+            step = 1
+            h, c = decoder.init_hidden_state(encoder_out)
+            # s is a number less than or equal to k, because sequences are removed from this process once they hit <end>
+            while True:
+
+                embeddings = decoder.embedding(k_prev_words).squeeze(1)  # (s, embed_dim)
+
+                awe, _ = decoder.attention(encoder_out, h)  # (s, encoder_dim), (s, num_pixels)
+
+                gate = decoder.sigmoid(decoder.f_beta(h))  # gating scalar, (s, encoder_dim)
+                awe = gate * awe
+
+                h, c = decoder.decode_step(torch.cat([embeddings, awe], dim=1), (h, c))  # (s, decoder_dim)
+
+                scores = decoder.fc(h)  # (s, vocab_size)
+                scores = F.log_softmax(scores, dim=1)
+
+                # Add
+                scores = top_k_scores.expand_as(scores) + scores  # (s, vocab_size)
+
+                # For the first step, all k points will have the same scores (since same k previous words, h, c)
+                if step == 1:
+                    top_k_scores, top_k_words = scores[0].topk(k, 0, True, True)  # (s)
+                else:
+                    # Unroll and find top scores, and their unrolled indices
+                    top_k_scores, top_k_words = scores.view(-1).topk(k, 0, True, True)  # (s)
+
+                # Convert unrolled indices to actual indices of scores
+                prev_word_inds = top_k_words // len(word2idx)  # (s)
+                next_word_inds = top_k_words % len(word2idx)  # (s)
+
+                # Add new words to sequences
+                seqs = torch.cat([seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1)  # (s, step+1)
+
+                # Which sequences are incomplete (didn't reach <end>)?
+                incomplete_inds = [ind for ind, next_word in enumerate(next_word_inds) if
+                                   next_word != word2idx['<end>']]
+                complete_inds = list(set(range(len(next_word_inds))) - set(incomplete_inds))
+
+                # Set aside complete sequences
+                if len(complete_inds) > 0:
+                    complete_seqs.extend(seqs[complete_inds].tolist())
+                    complete_seqs_scores.extend(top_k_scores[complete_inds])
+                k -= len(complete_inds)  # reduce beam length accordingly
+
+                # Proceed with incomplete sequences
+                if k == 0:
+                    break
+                seqs = seqs[incomplete_inds]
+                h = h[prev_word_inds[incomplete_inds]]
+                c = c[prev_word_inds[incomplete_inds]]
+                encoder_out = encoder_out[prev_word_inds[incomplete_inds]]
+                top_k_scores = top_k_scores[incomplete_inds].unsqueeze(1)
+                k_prev_words = next_word_inds[incomplete_inds].unsqueeze(1)
+
+                # Break if things have been going on too long
+                if step > 50:
+                    break
+                step += 1
+
+            if len(complete_seqs) > 0:
+                i = complete_seqs_scores.index(max(complete_seqs_scores))
+                seq = complete_seqs[i]
+            else:
+                i = int(scores.argmax() // scores.shape[1])
+                seq = seqs[i].tolist()
+            if seq == caps.squeeze()[:caplens].tolist():
+                counter += 1
+
+    return losses.val, top5accs.val, topacc.val, (counter / len(beam_loader.dataset))
+
 
 if __name__ == '__main__':
-    # remember to specify a new model_dir each time. otherwise previous checkpoints will be overwritten
     args = dict(label_type="word", emb_dim=20, decoder_dim=300, att_dim=300, dropout=0.5, start_epoch=0, epochs=120,
                 batch_size=32,
                 workers=0, encoder_lr=1e-4, decoder_lr=4e-4, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
-                print_freq=100, save_freq=10,
-                checkpoint=None, data_dir="data", label_file="music_strings_small.txt", model_name="base")
+                print_freq=10, save_freq=10,
+                checkpoint=None, data_dir="data", label_file="music_strings_small.txt", model_name="base", layers=18,
+                beam_size=10)
     main(args)
