@@ -22,7 +22,7 @@ def scores2string(scores, idx2word):
 	for p in preds:
 		words.append(idx2word[int(p)])
 	return words
-
+	
 
 def pitch_match(pred_words, target_words):
 	def get_pitch(word):
@@ -33,18 +33,51 @@ def pitch_match(pred_words, target_words):
 
 	pred_pitches, target_pitches = [], []
 	for w in pred_words:
+		if w[0].lower() not in 'abcdefg':
+			continue
 		pred_pitches.append(get_pitch(w))
 	for w in target_words:
+		if w[0].lower() not in 'abcdefg':
+			continue
 		target_pitches.append(get_pitch(w))
 	matches = 0
-	for i in range(len(pred_pitches)):
-		if pred_pitches[i] == target_pitches[i]:
+	if len(pred_pitches) < len(target_pitches):
+		for i in range(len(pred_pitches)):
+			if pred_pitches[i] == target_pitches[i]:
 				matches += 1
 	else:
 		for i in range(len(target_pitches)):
 			if pred_pitches[i] == target_pitches[i]:
 				matches += 1	
-	return 	matches / min(len(pred_pitches), len(target_pitches))
+	return 	matches / max(len(pred_pitches), len(target_pitches))
+
+
+def beat_match(pred_words, target_words):
+	def get_beat(word):
+		if word[-1] == '6':
+			return word[-2:]
+		else:
+			return word[-1]
+
+	pred_beats, target_beats = [], []
+	for w in pred_words:
+		if w[0].lower() not in 'abcdefg':
+			continue
+		pred_beats.append(get_beat(w))
+	for w in target_words:
+		if w[0].lower() not in 'abcdefg':
+			continue
+		target_beats.append(get_beat(w))
+	matches = 0
+	if len(pred_pitches) < len(target_pitches):
+		for i in range(len(pred_beats)):
+			if pred_beats[i] == target_beats[i]:
+				matches += 1
+	else:
+		for i in range(len(target_beats)):
+			if pred_beats[i] == target_beats[i]:
+				matches += 1	
+	return 	matches / max(len(pred_beats), len(target_beats))
 
 
 def create_input_files(dataset, karpathy_json_path, image_folder, captions_per_image, min_word_freq, output_folder,
