@@ -1,17 +1,13 @@
+from tensorboardX import SummaryWriter
 import time
-import random
-
-import torch.backends.cudnn as cudnn
 import torch.optim
 import torch.utils.data
-import torchvision.transforms as transforms
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence
 import torch.nn.functional as F
 from models import Encoder, DecoderWithAttention
 from utils import *
 from dataset import *
-from torch.utils.tensorboard import SummaryWriter
 import argparse
 import sys
 
@@ -73,7 +69,7 @@ def main(args):
                                    dropout=dropout)
     decoder_optimizer = torch.optim.Adam(params=decoder.parameters(),
                                          lr=decoder_lr)
-    encoder = Encoder(int(layers))
+    encoder = Encoder(model_size=int(layers))
     encoder_optimizer = torch.optim.Adam(params=encoder.parameters(),
                                          lr=encoder_lr)
 
@@ -104,28 +100,18 @@ def main(args):
     # TODO might want to split the data into train, val, test, or we can just generate more test data
     data = Dataset(data_dir, list(range(0, len(corpus))), corpus_idx)
 
-    # num = len(data)  # how many total elements you have
-    # val_num  = int(num * .2)
-    # idx = list(range(num))  # indices to all elements
-    # random.shuffle(idx)  # in-place shuffle the indices to facilitate random splitting
-    # train_idx = idx[val_num:]
-    # val_idx = idx[:val_num]
-
-    # train_data = data
-    # val_data = torch.utils.data.Subset(data, val_idx)
-
     split = [int(len(data) * 0.8), int(len(data) * 0.2)]
     train_data, val_data = torch.utils.data.dataset.random_split(data, split)
 
     train_loader = torch.utils.data.DataLoader(
-        train_data, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
+        train_data, batch_size=batch_size, shuffle=True, num_workers=1, pin_memory=True)
 
     val_loader = torch.utils.data.DataLoader(
-        val_data, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
+        val_data, batch_size=batch_size, shuffle=False, num_workers=1, pin_memory=True)
 
     # loader used for beam search for validation
     beam_loader = torch.utils.data.DataLoader(
-        val_data, batch_size=1, shuffle=True, num_workers=0, pin_memory=True)
+        val_data, batch_size=1, shuffle=False, num_workers=1, pin_memory=True)
 
     for epoch in range(start_epoch, epochs):
 
@@ -404,7 +390,7 @@ if __name__ == '__main__':
     args = dict(label_type="word", emb_dim=20, decoder_dim=300, att_dim=300, dropout=0.5, start_epoch=0, epochs=120,
                 batch_size=32,
                 workers=0, encoder_lr=1e-4, decoder_lr=4e-4, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
-                print_freq=10, save_freq=10,
-                checkpoint=None, data_dir="data", label_file="music_strings_small.txt", model_name="base", layers=18,
+                print_freq=20, save_freq=10,
+                checkpoint=None, data_dir="data", label_file="music_strings_small.txt", model_name="base", layers=34,
                 beam_size=10)
     main(args)
