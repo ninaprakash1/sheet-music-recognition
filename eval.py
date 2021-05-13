@@ -1,10 +1,7 @@
-import torch.backends.cudnn as cudnn
 import torch.optim
 import torch.utils.data
-import torchvision.transforms as transforms
 from dataset import *
 from utils import *
-from nltk.translate.bleu_score import corpus_bleu
 import torch.nn.functional as F
 from models import *
 from tqdm import tqdm
@@ -23,6 +20,7 @@ def evaluate(args):
     data_dir = args["data_dir"]
     label_file = args["label_file"]
     beam_size = args["beam_size"]
+    model_size = args["model_size"]
 
     print("model: " + checkpoint)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -30,7 +28,7 @@ def evaluate(args):
     if (label_type == 'char'):
         corpus, word2idx, max_len = read_captions(label_file)
     elif (label_type == 'word'):
-        corpus, word2idx, max_len = read_captions_word(label_file)
+        corpus, word2idx, idx2word, max_len = read_captions_word(label_file)
     corpus_idx = convert_corpus_idx(word2idx, corpus, max_len)
 
     decoder = DecoderWithAttention(attention_dim=att_dim,
@@ -39,10 +37,10 @@ def evaluate(args):
                                    vocab_size=len(word2idx),
                                    dropout=dropout)
 
-    encoder = Encoder()
+    encoder = Encoder(model_size=model_size)
 
     assert checkpoint
-    checkpoint = torch.load(checkpoint)
+    checkpoint = torch.load(checkpoint, map_location ='cpu')
     decoder.load_state_dict(checkpoint['decoder_state_dict'])
     encoder.load_state_dict(checkpoint['encoder_state_dict'])
 
@@ -52,13 +50,20 @@ def evaluate(args):
     encoder.eval()
     decoder.eval()
 
+
+    # TODO fix train, eval, test split
+    data = Dataset(data_dir, list(range(0, len(corpus))), corpus_idx)
+
+    split = [500, len(data) - 500]
+    val_data, _ = torch.utils.data.dataset.random_split(data, split)
+
     test_loader = torch.utils.data.DataLoader(
-        Dataset(data_dir, list(range(0, 4)), corpus_idx),
+        val_data,
         batch_size=1, shuffle=True, num_workers=0, pin_memory=True)
 
-    # sequences = []
-    # ground_truth = []
     counter = 0
+    pitch_match_score = 0
+    beat_match_score = 0
 
     with torch.no_grad():
         for i, (image, caps, caplens) in enumerate(
@@ -66,8 +71,7 @@ def evaluate(args):
 
             k = beam_size
 
-            # Move to GPU device, if available
-            image = image.to(device)  # (1, 3, 256, 256)
+            image = image.to(device)
 
             encoder_out = encoder(image.float())  # (1, enc_image_size, enc_image_size, encoder_dim)
             encoder_dim = encoder_out.size(3)
@@ -146,27 +150,109 @@ def evaluate(args):
                 top_k_scores = top_k_scores[incomplete_inds].unsqueeze(1)
                 k_prev_words = next_word_inds[incomplete_inds].unsqueeze(1)
 
-                # Break if things have been going on too long
+                # longest string is not len 50 so break when step > 50
                 if step > 50:
                     break
                 step += 1
 
-            i = complete_seqs_scores.index(max(complete_seqs_scores))
-            seq = complete_seqs[i]
+            if len(complete_seqs) > 0:
+                i = complete_seqs_scores.index(max(complete_seqs_scores))
+                seq = complete_seqs[i]
+            else:
+                i = int(scores.argmax() // scores.shape[1])
+                seq = seqs[i].tolist()
             if seq == caps.squeeze()[:caplens].tolist():
                 counter += 1
 
-    # compute exact match
-    # EM = accuracy()
-    return counter / len(test_loader.dataset)
+            # look up the string for pitch accuracy and beat accuracy
+            pred_seq = idx2string(seq, idx2word)
+            target_seq = idx2string(caps.squeeze()[:caplens].tolist(), idx2word)
+
+            pitch_match_score += pitch_match(pred_seq, target_seq)
+            beat_match_score += beat_match(pred_seq, target_seq)
+
+
+    true_EM = counter / 500
+    pitch_match_score /= 500
+    beat_match_score /= 500
+
+    return true_EM, pitch_match_score, beat_match_score
+
+
+def idx2string(idx, idx2word):
+    words = []
+    for word_idx in idx:
+        words.append(idx2word[word_idx])
+    return words
+
+def pitch_match(pred_words, target_words):
+    def get_pitch(word):
+        if word[-1] == '6':
+            return word[:-2]
+        else:
+            return word[:-1]
+
+    pred_pitches, target_pitches = [], []
+    for w in pred_words:
+        if w[0].lower() not in 'abcdefgr':
+            continue
+        pred_pitches.append(get_pitch(w))
+    for w in target_words:
+        if w[0].lower() not in 'abcdefgr':
+            continue
+        target_pitches.append(get_pitch(w))
+    matches = 0
+    if len(pred_pitches) < len(target_pitches):
+        for i in range(len(pred_pitches)):
+            if pred_pitches[i] == target_pitches[i]:
+                matches += 1
+    else:
+        for i in range(len(target_pitches)):
+            if pred_pitches[i] == target_pitches[i]:
+                matches += 1
+    return matches / (max(len(pred_pitches), len(target_pitches)) + 0.0001)
+
+
+def beat_match(pred_words, target_words):
+    def get_beat(word):
+        if word[-1] == '6':
+            return word[-2:]
+        else:
+            return word[-1]
+
+    pred_beats, target_beats = [], []
+    for w in pred_words:
+        if w[0].lower() not in 'abcdefgr':
+            continue
+        pred_beats.append(get_beat(w))
+    for w in target_words:
+        if w[0].lower() not in 'abcdefgr':
+            continue
+        target_beats.append(get_beat(w))
+    matches = 0
+    if len(pred_beats) < len(target_beats):
+        for i in range(len(pred_beats)):
+            if pred_beats[i] == target_beats[i]:
+                matches += 1
+    else:
+        for i in range(len(target_beats)):
+            if pred_beats[i] == target_beats[i]:
+                matches += 1
+                # clear divide by zero errors
+    return matches / (max(len(pred_beats), len(target_beats)) + 0.0001)
 
 
 if __name__ == '__main__':
     args = dict(label_type="word", emb_dim=20, decoder_dim=300, att_dim=300, dropout=0.5,
-                batch_size=4,
+                batch_size=32,
                 workers=0, encoder_lr=1e-4, decoder_lr=1e-4, decay_rate=1, grad_clip=5.0, att_reg=1.0,
                 print_freq=100, save_freq=10,
-                checkpoint="model/base-2/epoch_2.pt", data_dir="data", label_file="music_strings_small.txt", model_name="base", beam_size=10)
-    EM = evaluate(args)
+                checkpoint=None, data_dir=None, label_file=None,
+                model_name="base", beam_size=10, model_size=34)
+    EM, pitch, beat = evaluate(args)
     print("EM: " + str(EM))
+    print("pitch: " + str(pitch))
+    print("beat: " + str(beat))
+
+
 

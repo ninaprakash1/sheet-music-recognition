@@ -8,14 +8,16 @@ import torch.nn.functional as F
 from models import Encoder, DecoderWithAttention
 from utils import *
 from dataset import *
-import argparse
-import sys
+from eval import idx2string, pitch_match, beat_match
 
-PYTHON = sys.executable
-# Set up command line arguments
-parser = argparse.ArgumentParser()
-parser.add_argument('-l', '--label_type', default='char',  # 'char' or 'word'
-                    required=False, help='Specify character or word-level prediction')
+# import argparse
+# import sys
+
+# PYTHON = sys.executable
+# # Set up command line arguments
+# parser = argparse.ArgumentParser()
+# parser.add_argument('-l', '--label_type', default='char',  # 'char' or 'word'
+#                     required=False, help='Specify character or word-level prediction')
 
 
 # TODO an argparse file specifying all default parameters to main().
@@ -59,7 +61,7 @@ def main(args):
     if (label_type == 'char'):
         corpus, word2idx, max_len = read_captions(label_file)
     elif (label_type == 'word'):
-        corpus, word2idx, max_len = read_captions_word(label_file)
+        corpus, word2idx, idx2word, max_len = read_captions_word(label_file)
     corpus_idx = convert_corpus_idx(word2idx, corpus, max_len)
 
     decoder = DecoderWithAttention(attention_dim=att_dim,
@@ -100,25 +102,25 @@ def main(args):
     # TODO might want to split the data into train, val, test, or we can just generate more test data
     data = Dataset(data_dir, list(range(0, len(corpus))), corpus_idx)
 
-    split = [int(len(data) * 0.8), int(len(data) * 0.2)]
-    train_data, val_data = torch.utils.data.dataset.random_split(data, split)
+    split = [int(len(data) * 0.34), int(len(data) * 0.067), len(data)-int(len(data) * 0.34)-int(len(data) * 0.067)]
+    train_data, val_data, rest = torch.utils.data.dataset.random_split(data, split)
 
     train_loader = torch.utils.data.DataLoader(
-        train_data, batch_size=batch_size, shuffle=True, num_workers=1, pin_memory=True)
+        train_data, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
 
     val_loader = torch.utils.data.DataLoader(
-        val_data, batch_size=batch_size, shuffle=False, num_workers=1, pin_memory=True)
+        val_data, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True)
 
     # loader used for beam search for validation
     beam_loader = torch.utils.data.DataLoader(
-        val_data, batch_size=1, shuffle=False, num_workers=1, pin_memory=True)
+        val_data, batch_size=1, shuffle=False, num_workers=workers, pin_memory=True)
 
     for epoch in range(start_epoch, epochs):
 
-        batch_time = AverageMeter()  # forward prop. + back prop. time
-        data_time = AverageMeter()  # data loading time
-        losses = AverageMeter()  # loss (per word decoded)
-        top5accs = AverageMeter()  # top5 accuracy
+        batch_time = AverageMeter()
+        data_time = AverageMeter()
+        losses = AverageMeter()
+        top5accs = AverageMeter()
         EM = AverageMeter()
 
         start = time.time()
@@ -132,29 +134,24 @@ def main(args):
 
                 data_time.update(time.time() - start)
 
-                # Move to GPU, if available
                 imgs = imgs.to(device)
                 caps = caps.to(device)
                 caplens = caplens.to(device)
 
-                # Forward prop.
                 imgs = encoder(imgs.float())
                 scores, caps_sorted, decode_lengths, alphas, sort_ind = decoder(imgs, caps, caplens)
-                # Since we decoded starting with <start>, the targets are all words after <start>, up to <end>
+                # get rid of <start>
                 targets = caps_sorted[:, 1:]
 
-                # Remove timesteps that we didn't decode at, or are pads
-                # pack_padded_sequence is an easy trick to do this
+                # more efficient computation
                 scores = pack_padded_sequence(scores, decode_lengths, batch_first=True)
                 targets = pack_padded_sequence(targets, decode_lengths, batch_first=True)
 
-                # Calculate loss
                 loss = criterion(scores.data, targets.data)
 
-                # Add doubly stochastic attention regularization
+                # doubly stochastic attention regularization
                 loss += att_reg * ((1. - alphas.sum(dim=1)) ** 2).mean()
 
-                # Back prop.
                 decoder_optimizer.zero_grad()
                 encoder_optimizer.zero_grad()
                 loss.backward()
@@ -165,7 +162,6 @@ def main(args):
                 decoder_optimizer.step()
                 encoder_optimizer.step()
 
-                # Keep track of metrics
                 top5 = accuracy(scores.data, targets.data, 5)
                 losses.update(loss.item(), sum(decode_lengths))
                 top5accs.update(top5, sum(decode_lengths))
@@ -181,7 +177,6 @@ def main(args):
 
                 step += batch_size
 
-                # Print status
                 if i != 0 and i % print_freq == 0:
                     print('Train\t'
                           'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
@@ -199,12 +194,14 @@ def main(args):
                 writer.add_scalar("train/decoder_lr", decoder_optimizer.param_groups[0]["lr"], step)
                 writer.flush()
 
-        val_loss, val_top5, val_top, em = validate(val_loader, beam_loader, encoder, decoder, criterion,
-                                               device, att_reg, epoch, beam_size=beam_size, word2idx=word2idx)
+        val_loss, val_top5, val_top, em, pitch, beat = validate(val_loader, beam_loader, encoder, decoder, criterion,
+                                               device, att_reg, epoch, beam_size=beam_size, word2idx=word2idx, idx2word=idx2word)
         writer.add_scalar("val/loss", val_loss, step)
         writer.add_scalar("val/top five accuracy", val_top5, step)
         writer.add_scalar("val/EM", val_top, step)
         writer.add_scalar("val/true EM", em, step)
+        writer.add_scalar("val/pitch", pitch, step)
+        writer.add_scalar("val/beat", beat, step)
         print('\nValidation\t'
               'Loss {loss:.4f}\t'
               'top5 {top5:.3f}\t'
@@ -229,7 +226,7 @@ def main(args):
         decoder_lr_scheduler.step()
 
 
-def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_reg, epoch, beam_size=10, word2idx=None):
+def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_reg, epoch, beam_size=10, word2idx=None, idx2word=None):
     """
     Performs one epoch's validation.
 
@@ -264,12 +261,10 @@ def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_r
             scores = pack_padded_sequence(scores, decode_lengths, batch_first=True)
             targets = pack_padded_sequence(targets, decode_lengths, batch_first=True)
 
-            # Calculate loss
             loss = criterion(scores.data, targets.data)
 
-            # Add doubly stochastic attention regularization
             loss += att_reg * ((1. - alphas.sum(dim=1)) ** 2).mean()
-            # Keep track of metrics
+
             losses.update(loss.item(), sum(decode_lengths))
             batch_time.update(time.time() - start)
             start = time.time()
@@ -283,14 +278,16 @@ def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_r
 
     # start computing true EM
     counter = 0
+    pitch_match_score = 0
+    beat_match_score = 0
+
     with torch.no_grad():
         for i, (image, caps, caplens) in enumerate(
                 tqdm(beam_loader, desc="EVALUATING AT BEAM SIZE " + str(beam_size), position=0, leave=True)):
 
             k = beam_size
 
-            # Move to GPU device, if available
-            image = image.to(device)  # (1, 3, 256, 256)
+            image = image.to(device)
 
             encoder_out = encoder(image.float())  # (1, enc_image_size, enc_image_size, encoder_dim)
             encoder_dim = encoder_out.size(3)
@@ -313,7 +310,6 @@ def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_r
             complete_seqs = list()
             complete_seqs_scores = list()
 
-            # Start decoding
             step = 1
             h, c = decoder.init_hidden_state(encoder_out)
             # s is a number less than or equal to k, because sequences are removed from this process once they hit <end>
@@ -331,10 +327,8 @@ def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_r
                 scores = decoder.fc(h)  # (s, vocab_size)
                 scores = F.log_softmax(scores, dim=1)
 
-                # Add
                 scores = top_k_scores.expand_as(scores) + scores  # (s, vocab_size)
 
-                # For the first step, all k points will have the same scores (since same k previous words, h, c)
                 if step == 1:
                     top_k_scores, top_k_words = scores[0].topk(k, 0, True, True)  # (s)
                 else:
@@ -369,7 +363,6 @@ def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_r
                 top_k_scores = top_k_scores[incomplete_inds].unsqueeze(1)
                 k_prev_words = next_word_inds[incomplete_inds].unsqueeze(1)
 
-                # Break if things have been going on too long
                 if step > 50:
                     break
                 step += 1
@@ -383,7 +376,17 @@ def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_r
             if seq == caps.squeeze()[:caplens].tolist():
                 counter += 1
 
-    return losses.val, top5accs.val, topacc.val, (counter / len(beam_loader.dataset))
+            pred_seq = idx2string(seq, idx2word)
+            target_seq = idx2string(caps.squeeze()[:caplens].tolist(), idx2word)
+
+            pitch_match_score += pitch_match(pred_seq, target_seq)
+            beat_match_score += beat_match(pred_seq, target_seq)
+
+    true_EM = counter / len(val_loader.dataset)
+    pitch_match_score /= len(val_loader.dataset)
+    beat_match_score /= len(val_loader.dataset)
+
+    return losses.val, top5accs.val, topacc.val, true_EM, pitch_match_score, beat_match_score
 
 
 if __name__ == '__main__':
@@ -391,6 +394,6 @@ if __name__ == '__main__':
                 batch_size=32,
                 workers=0, encoder_lr=1e-4, decoder_lr=4e-4, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
                 print_freq=20, save_freq=10,
-                checkpoint=None, data_dir="data", label_file="music_strings_small.txt", model_name="base", layers=34,
+                checkpoint=None, data_dir="different_measures", label_file="different_measures_strings.txt", model_name="different_measures_small", layers=34,
                 beam_size=10)
     main(args)
