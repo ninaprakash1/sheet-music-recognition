@@ -41,6 +41,8 @@ def pitch_match(pred_words, target_words):
 			continue
 		target_pitches.append(get_pitch(w))
 	matches = 0
+	if max(len(pred_pitches), len(target_pitches)) == 0:
+		return 0
 	if len(pred_pitches) < len(target_pitches):
 		for i in range(len(pred_pitches)):
 			if pred_pitches[i] == target_pitches[i]:
@@ -48,7 +50,7 @@ def pitch_match(pred_words, target_words):
 	else:
 		for i in range(len(target_pitches)):
 			if pred_pitches[i] == target_pitches[i]:
-				matches += 1	
+				matches += 1
 	return 	matches / max(len(pred_pitches), len(target_pitches))
 
 
@@ -69,7 +71,9 @@ def beat_match(pred_words, target_words):
 			continue
 		target_beats.append(get_beat(w))
 	matches = 0
-	if len(pred_pitches) < len(target_pitches):
+	if max(len(pred_beats), len(target_beats)) == 0:
+		return 0
+	if len(pred_beats) < len(target_beats):
 		for i in range(len(pred_beats)):
 			if pred_beats[i] == target_beats[i]:
 				matches += 1
