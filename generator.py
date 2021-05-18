@@ -23,15 +23,15 @@ pitches_nats = ["C", "D", "E", "F", "G", "A", "B",
 				"r", "r"]
 accidentals = ["", "", "", "", "", "", "", "#", "#", "##", "-", "-", "--"]
 
-def generate_music_string(time_sig):
+def generate_music_string(time_sig, num_measures=1):
 	result = "tinyNotation: " + time_sig + " "
 	time_sig = time_sig.split("/")
 	beats = []
 	top = int(time_sig[0])
 	bottom = int(time_sig[1])
-	while sum(beats) != top * bottom_map[bottom]:
+	while sum(beats) != top * bottom_map[bottom] * num_measures:
 		new_beat = random.sample(durations, 1)[0]
-		if sum(beats) + new_beat > top * bottom_map[bottom]:
+		if sum(beats) + new_beat > top * bottom_map[bottom] * num_measures:
 			continue
 		else:
 			beats.append(new_beat)
@@ -39,9 +39,12 @@ def generate_music_string(time_sig):
 	for beat in beats:
 		pitch = random.sample(pitches_nats, 1)[0]
 		acc = random.sample(accidentals, 1)[0]
-		result += pitch + acc + str(beat)
+		result += pitch
+		if pitch != "r":
+			result += acc
+		result += str(beat)
 		result += " "
-
-	return result[:-1]
+	result_split = result[:-1].split(' ')[:34]
+	return ' '.join(result_split)
 
 
