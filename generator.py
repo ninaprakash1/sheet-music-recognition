@@ -47,4 +47,14 @@ def generate_music_string(time_sig, num_measures=1):
 	result_split = result[:-1].split(' ')[:34]
 	return ' '.join(result_split)
 
+if __name__ == '__main__':
+    music_strings = []
+    for i in range(1):
+        music_str = generate_music_string("4/4")
+        converter.parse(music_str).write("musicxml.png", fp="./data/image" + str(i))
+        music_strings.append(music_str)
 
+    f = open("music_strings_test.txt","w")
+    for line in music_strings:
+        f.write(line + "\n")
+    f.close()
