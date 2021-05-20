@@ -9,6 +9,7 @@ from models import Encoder, DecoderWithAttention
 from utils import *
 from dataset import *
 from eval import idx2string, pitch_match, beat_match
+from transformer_decoder import CaptioningTransformer
 
 # import argparse
 # import sys
@@ -64,11 +65,17 @@ def main(args):
         corpus, word2idx, idx2word, max_len = read_captions_word(label_file)
     corpus_idx = convert_corpus_idx(word2idx, corpus, max_len)
 
-    decoder = DecoderWithAttention(attention_dim=att_dim,
-                                   embed_dim=emb_dim,
-                                   decoder_dim=decoder_dim,
-                                   vocab_size=len(word2idx),
-                                   dropout=dropout)
+    # TODO add if statment
+    # decoder = DecoderWithAttention(attention_dim=att_dim,
+    #                                embed_dim=emb_dim,
+    #                                decoder_dim=decoder_dim,
+    #                                vocab_size=len(word2idx),
+    #                                dropout=dropout)
+
+    # need to change input_dim when changing the original data size or the encoder model
+    decoder = CaptioningTransformer(word_to_idx=word2idx, wordvec_dim=emb_dim, input_dim=8*16*512, max_length=max_len+2)
+
+
     decoder_optimizer = torch.optim.Adam(params=decoder.parameters(),
                                          lr=decoder_lr)
     encoder = Encoder(model_size=int(layers))
@@ -139,18 +146,30 @@ def main(args):
                 caplens = caplens.to(device)
 
                 imgs = encoder(imgs.float())
-                scores, caps_sorted, decode_lengths, alphas, sort_ind = decoder(imgs, caps, caplens)
-                # get rid of <start>
-                targets = caps_sorted[:, 1:]
+
+                # TODO add if statement
+                # # use attention + RNN
+                # scores, caps_sorted, decode_lengths, alphas, sort_ind = decoder(imgs, caps, caplens)
+                # # get rid of <start>
+                # targets = caps_sorted[:, 1:]
+
+                N, H, W, C = imgs.shape
+                imgs = imgs.reshape((N, -1))
+                scores = decoder(imgs, caps)[:, 1:, ]
+                # no need to decode at <end>
+                decode_lengths = (caplens.squeeze(1) - 1).tolist()
+                targets = caps[:, 1:]
 
                 # more efficient computation
-                scores = pack_padded_sequence(scores, decode_lengths, batch_first=True)
-                targets = pack_padded_sequence(targets, decode_lengths, batch_first=True)
+                scores = pack_padded_sequence(scores, decode_lengths, batch_first=True, enforce_sorted=False)
+                targets = pack_padded_sequence(targets, decode_lengths, batch_first=True, enforce_sorted=False)
 
                 loss = criterion(scores.data, targets.data)
 
+                # TODO add if statement
                 # doubly stochastic attention regularization
-                loss += att_reg * ((1. - alphas.sum(dim=1)) ** 2).mean()
+                # # use attention + RNN
+                # loss += att_reg * ((1. - alphas.sum(dim=1)) ** 2).mean()
 
                 decoder_optimizer.zero_grad()
                 encoder_optimizer.zero_grad()
@@ -394,6 +413,6 @@ if __name__ == '__main__':
                 batch_size=32,
                 workers=0, encoder_lr=1e-4, decoder_lr=4e-4, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
                 print_freq=20, save_freq=10,
-                checkpoint=None, data_dir="different_measures", label_file="different_measures_strings.txt", model_name="different_measures_small", layers=34,
+                checkpoint=None, data_dir="different_measures", label_file="different_measures_strings.txt", model_name="test_transformer", layers=34,
                 beam_size=10)
     main(args)

@@ -31,6 +31,7 @@ class Encoder(nn.Module):
         :param images: images, a tensor of dimensions (batch_size, 3, image_size, image_size)
         :return: encoded images
         """
+        # TODO resnet for now, but might want something faster.
         out = self.resnet(images)  # (batch_size, 512, image_size/32, image_size/32)
         out = out.permute(0, 2, 3, 1)  # (batch_size, encoded_image_size, encoded_image_size, 512)
         return out
@@ -151,7 +152,7 @@ class DecoderWithAttention(nn.Module):
 
         h, c = self.init_hidden_state(encoder_out)  # (batch_size, decoder_dim)
 
-        # doesn't need to decode at <enbd>
+        # doesn't need to decode at <end>
         decode_lengths = (caption_lengths - 1).tolist()
 
         predictions = torch.zeros(batch_size, max(decode_lengths), vocab_size).to(device)

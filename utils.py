@@ -103,3 +103,4 @@ def create_checkpoint_dir(model_name):
     os.makedirs(path)
 
     return path
+
