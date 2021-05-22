@@ -39,8 +39,11 @@ class CaptioningTransformer(nn.Module):
         self._null = word_to_idx["<pad>"]
         self._start = word_to_idx.get("<start>", None)
         self._end = word_to_idx.get("<end>", None)
+        self.vocab_size = vocab_size
+        self.max_length = max_length
 
         self.num_heads = num_heads
+        # TODO change the encoded image size
         self.visual_projection = nn.Linear(input_dim, wordvec_dim)
         self.embedding = nn.Embedding(vocab_size, wordvec_dim, padding_idx=self._null)
         self.positional_encoding = PositionalEncoding(wordvec_dim, max_len=max_length)
@@ -70,7 +73,7 @@ class CaptioningTransformer(nn.Module):
         of captions is provided all at once, we mask out future timesteps.
 
         Inputs:
-         - features: image features, of shape (N, D)
+         - features: image features, of shape (N, D, T') , where T' is the width of the image
          - captions: ground truth captions, of shape (N, T)
 
         Returns:
@@ -83,9 +86,10 @@ class CaptioningTransformer(nn.Module):
         caption_embeddings = self.embedding(captions)
         caption_embeddings = self.positional_encoding(caption_embeddings)
 
-        # Project image features into the same dimension as the text embeddings.
-        # shape: [N, D] -> [N, W] -> [N, 1, W]
-        projected_features = self.visual_projection(features).unsqueeze(1)
+        # transpose the image and transform feature representation of each vertical stripe
+        # projected_features = self.visual_projection(features)
+        projected_features = F.relu(self.visual_projection(features.transpose(-1, -2)))
+
 
         # An additive mask for masking the future (one direction).
         # shape: [T, T]
@@ -95,7 +99,7 @@ class CaptioningTransformer(nn.Module):
 
         # mask padded positions
         pad_mask = captions != self._null
-        pad_mask = pad_mask.unsqueeze(-2)
+        pad_mask = pad_mask.unsqueeze(1)
         tgt_mask = tgt_mask * pad_mask
         tgt_mask = tgt_mask.unsqueeze(1).repeat(1, self.num_heads, 1, 1)
 
@@ -106,17 +110,17 @@ class CaptioningTransformer(nn.Module):
                                     tgt_mask=tgt_mask)
 
         # Project to scores per token.
-        # shape: [N, T, W] -> [N, T, V]
+        # shape: [N, T, W] -> [N, T, V], V vocab size
         scores = self.output(features)
 
         return scores
 
-    def sample(self, features, max_length=30):
+    def sample(self, features, max_length=70, beam_size=10):
         """
         Given image features, use greedy decoding to predict the image caption.
 
         Inputs:
-         - features: image features, of shape (N, D)
+         - features: image features, of shape (1, D, T')
          - max_length: maximum possible caption length
 
         Returns:
@@ -124,40 +128,96 @@ class CaptioningTransformer(nn.Module):
         """
         with torch.no_grad():
             features = torch.Tensor(features)
-            N = features.shape[0]
+
+            # initialze k the number of sequence we are decoding at each time step
+            k = beam_size
 
             # Create an empty captions tensor (where all tokens are NULL).
-            captions = self._null * np.ones((N, max_length), dtype=np.int32)
+            # captions = self._null * np.ones((N, max_length), dtype=np.int32)
+
+            k_prev_words = torch.LongTensor([[self._start]] * k) # (k, 1)
+
+            # Tensor to store top k sequences
+            seqs = k_prev_words  # (k, 1)
+
+            # Tensor to store top k sequences' scores
+            top_k_scores = torch.zeros(k, 1)  # (k, 1)
+
+            # Lists to store completed sequences and scores
+            complete_seqs = list()
+            complete_seqs_scores = list()
 
             # Create a partial caption, with only the start token.
-            partial_caption = self._start * np.ones(N, dtype=np.int32)
-            partial_caption = torch.LongTensor(partial_caption)
+            # partial_caption = self._start * np.ones(N, dtype=np.int32)
+            # partial_caption = torch.Tensor(partial_caption)
             # [N] -> [N, 1]
-            partial_caption = partial_caption.unsqueeze(1)
+            # partial_caption = partial_caption.unsqueeze(1)
 
-            for t in range(max_length):
+
+            # start with the token after <start>
+            for step in range(1, max_length+1):
 
                 # Predict the next token (ignoring all other time steps).
-                output_logits = self.forward(features, partial_caption)
-                output_logits = output_logits[:, -1, :]
+                output_logits = self.forward(features, seqs)
+                output_logits = output_logits[:, -1, :] # [k, V]
 
                 # Choose the most likely word ID from the vocabulary.
                 # [N, V] -> [N]
-                word = torch.argmax(output_logits, axis=1)
+                # word = torch.argmax(output_logits, dim=1)
+
+                scores = F.log_softmax(output_logits, dim=1)
+                scores = top_k_scores.expand_as(scores) + scores
+
+                if step == 1:
+                    top_k_scores, top_k_words = scores[0].topk(k, 0, True, True)  # (s)
+                else:
+                    # Unroll and find top scores, and their unrolled indices
+                    top_k_scores, top_k_words = scores.view(-1).topk(k, 0, True, True)  # (s)
+
+                prev_word_inds = top_k_words // self.vocab_size  # (s)
+                next_word_inds = top_k_words % self.vocab_size  # (s)
+
+                seqs = torch.cat([seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1)
+
+                incomplete_inds = [ind for ind, next_word in enumerate(next_word_inds) if
+                                   next_word != self._end]
+                complete_inds = list(set(range(len(next_word_inds))) - set(incomplete_inds))
+
+                if len(complete_inds) > 0:
+                    complete_seqs.extend(seqs[complete_inds].tolist())
+                    complete_seqs_scores.extend(top_k_scores[complete_inds])
+                k -= len(complete_inds)
+
+                if k == 0:
+                    break
+
+                seqs = seqs[incomplete_inds]
+
+                top_k_scores = top_k_scores[incomplete_inds].unsqueeze(1)
+                # k_prev_words = next_word_inds[incomplete_inds].unsqueeze(1)
+
+            if len(complete_seqs) > 0:
+                i = complete_seqs_scores.index(max(complete_seqs_scores))
+                seq = complete_seqs[i]
+            else:
+                i = int(scores.argmax() // scores.shape[1])
+                seq = seqs[i].tolist()
+
+
 
                 # Update our overall caption and our current partial caption.
-                captions[:, t] = word.numpy()
-                word = word.unsqueeze(1)
-                partial_caption = torch.cat([partial_caption, word], dim=1)
+                # captions[:, t] = word.numpy()
+                # word = word.unsqueeze(1)
+                # partial_caption = torch.cat([partial_caption, word], dim=1)
 
-            return captions
+            return seq
 
 
 class TransformerDecoderLayer(nn.Module):
     """
     A single layer of a Transformer decoder, to be used with TransformerDecoder.
     """
-    def __init__(self, input_dim, num_heads, dim_feedforward=2048, dropout=0.1):
+    def __init__(self, input_dim, num_heads, dim_feedforward=200, dropout=0.1):
         """
         Construct a TransformerDecoderLayer instance.
 
@@ -205,6 +265,8 @@ class TransformerDecoderLayer(nn.Module):
         # Attend to both the target sequence and the sequence from the last
         # encoder layer.
         tgt2 = self.multihead_attn(query=tgt, key=memory, value=memory)
+        # tgt = torch.cat([tgt, self.dropout2(tgt2)], dim=-1)
+        # tgt = self.att_proj(tgt)
         tgt = tgt + self.dropout2(tgt2)
         tgt = self.norm2(tgt)
 
@@ -343,12 +405,12 @@ class MultiHeadAttention(nn.Module):
           data in value according to the attention weights calculated using key
           and query.
         """
-        N, S, D = query.shape
-        N, T, D = value.shape
+        Nq, S, D = query.shape
+        Nv, T, D = value.shape
 
-        q = self.Wq(query).view((N, S, self.num_heads, D // self.num_heads))
-        k = self.Wk(key).view((N, T, self.num_heads, D // self.num_heads))
-        v = self.Wv(value).view((N, T, self.num_heads, D // self.num_heads))
+        q = self.Wq(query).view((Nq, S, self.num_heads, D // self.num_heads))
+        k = self.Wk(key).view((Nv, T, self.num_heads, D // self.num_heads))
+        v = self.Wv(value).view((Nv, T, self.num_heads, D // self.num_heads))
 
         attn = (torch.matmul(q.transpose(1, 2), k.permute(0, 2, 3, 1))
                 / math.sqrt(D // self.num_heads))  # N, H, S, T
@@ -357,6 +419,6 @@ class MultiHeadAttention(nn.Module):
         score = F.softmax(attn, dim=-1)
         score = self.dropout(score)
         Y = torch.matmul(score, v.transpose(1, 2))
-        output = self.A(Y.transpose(1, 2).reshape(N, S, D))
+        output = self.A(Y.transpose(1, 2).reshape(Nq, S, D))
 
         return output
