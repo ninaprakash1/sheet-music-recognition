@@ -115,7 +115,7 @@ class CaptioningTransformer(nn.Module):
 
         return scores
 
-    def sample(self, features, max_length=70, beam_size=10):
+    def sample(self, features, device, max_length=70, beam_size=10):
         """
         Given image features, use greedy decoding to predict the image caption.
 
@@ -127,21 +127,19 @@ class CaptioningTransformer(nn.Module):
          - captions: captions for each example, of shape (N, max_length)
         """
         with torch.no_grad():
-            features = torch.Tensor(features)
-
             # initialze k the number of sequence we are decoding at each time step
             k = beam_size
 
             # Create an empty captions tensor (where all tokens are NULL).
             # captions = self._null * np.ones((N, max_length), dtype=np.int32)
 
-            k_prev_words = torch.LongTensor([[self._start]] * k) # (k, 1)
+            k_prev_words = torch.LongTensor([[self._start]] * k).to(device) # (k, 1)
 
             # Tensor to store top k sequences
             seqs = k_prev_words  # (k, 1)
 
             # Tensor to store top k sequences' scores
-            top_k_scores = torch.zeros(k, 1)  # (k, 1)
+            top_k_scores = torch.zeros(k, 1).to(device)  # (k, 1)
 
             # Lists to store completed sequences and scores
             complete_seqs = list()

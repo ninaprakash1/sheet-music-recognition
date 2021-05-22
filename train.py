@@ -328,7 +328,7 @@ def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_r
 
         image = encoder(image.float())
         image = image.squeeze(1)
-        seq = decoder.sample(image)
+        seq = decoder.sample(image, device)
         if seq == caps.squeeze()[:caplens].tolist():
             counter += 1
         print(seq)
@@ -445,10 +445,10 @@ def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_r
 
 
 if __name__ == '__main__':
-    args = dict(label_type="word", emb_dim=200, decoder_dim=300, att_dim=300, dropout=0, start_epoch=0, epochs=2000,
+    args = dict(label_type="word", emb_dim=200, decoder_dim=300, att_dim=300, dropout=0, start_epoch=0, epochs=80,
                 batch_size=32,
                 workers=0, encoder_lr=1e-3, decoder_lr=1e-3, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
-                print_freq=20, save_freq=1000,
+                print_freq=20, save_freq=2,
                 checkpoint=None, data_dir="different_measures", label_file="different_measures_strings.txt", model_name="test_transformer", layers=34,
                 beam_size=10)
     main(args)
