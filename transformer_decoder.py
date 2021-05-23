@@ -8,6 +8,7 @@ from torch.nn import functional as F
 import math
 import numpy as np
 import copy
+import sys
 
 
 class CaptioningTransformer(nn.Module):
@@ -46,7 +47,7 @@ class CaptioningTransformer(nn.Module):
         # TODO change the encoded image size
         self.visual_projection = nn.Linear(input_dim, wordvec_dim)
         self.embedding = nn.Embedding(vocab_size, wordvec_dim, padding_idx=self._null)
-        self.positional_encoding = PositionalEncoding(wordvec_dim, max_len=max_length)
+        self.positional_encoding = PositionalEncoding(wordvec_dim)
 
         decoder_layer = TransformerDecoderLayer(input_dim=wordvec_dim, num_heads=num_heads)
         self.transformer = TransformerDecoder(decoder_layer, num_layers=num_layers)
@@ -115,7 +116,7 @@ class CaptioningTransformer(nn.Module):
 
         return scores
 
-    def sample(self, features, device, max_length=70, beam_size=10):
+    def sample(self, features, device, max_length=50, beam_size=10):
         """
         Given image features, use greedy decoding to predict the image caption.
 
@@ -126,6 +127,36 @@ class CaptioningTransformer(nn.Module):
         Returns:
          - captions: captions for each example, of shape (N, max_length)
         """
+        # with torch.no_grad():
+        #     features = torch.Tensor(features)
+        #     N = features.shape[0]
+        #
+        #     # Create an empty captions tensor (where all tokens are NULL).
+        #     captions = self._null * np.ones((N, max_length), dtype=np.int32)
+        #
+        #     # Create a partial caption, with only the start token.
+        #     partial_caption = self._start * np.ones(N, dtype=np.int32)
+        #     partial_caption = torch.LongTensor(partial_caption)
+        #     # [N] -> [N, 1]
+        #     partial_caption = partial_caption.unsqueeze(1)
+        #
+        #     for t in range(max_length):
+        #         # Predict the next token (ignoring all other time steps).
+        #         output_logits = self.forward(features, partial_caption)
+        #         output_logits = output_logits[:, -1, :]
+        #
+        #         # Choose the most likely word ID from the vocabulary.
+        #         # [N, V] -> [N]
+        #         word = torch.argmax(output_logits, dim=1)
+        #
+        #         # Update our overall caption and our current partial caption.
+        #         captions[:, t] = word.numpy()
+        #         word = word.unsqueeze(1)
+        #         partial_caption = torch.cat([partial_caption, word], dim=1)
+        #
+        #     return captions
+
+
         with torch.no_grad():
             # initialze k the number of sequence we are decoding at each time step
             k = beam_size
@@ -155,6 +186,7 @@ class CaptioningTransformer(nn.Module):
             # start with the token after <start>
             for step in range(1, max_length+1):
 
+                # features = features.repeat(k, 1, 1)
                 # Predict the next token (ignoring all other time steps).
                 output_logits = self.forward(features, seqs)
                 output_logits = output_logits[:, -1, :] # [k, V]
@@ -295,54 +327,81 @@ class TransformerDecoder(nn.Module):
         return output
 
 
+# class PositionalEncoding(nn.Module):
+#     """
+#     Encodes information about the positions of the tokens in the sequence. In
+#     this case, the layer has no learnable parameters, since it is a simple
+#     function of sines and cosines.
+#     """
+#
+#     def __init__(self, embed_dim, dropout=0.1, max_len=1000):
+#         """
+#         Construct the PositionalEncoding layer.
+#
+#         Inputs:
+#          - embed_dim: the size of the embed dimension
+#          - dropout: the dropout value
+#          - max_len: the maximum possible length of the incoming sequence
+#         """
+#         super().__init__()
+#         self.dropout = nn.Dropout(p=dropout)
+#         assert embed_dim % 2 == 0
+#
+#         pe = torch.zeros(1, max_len, embed_dim)
+#
+#         even = torch.arange(0, embed_dim, 2)
+#         even_mat = torch.tensor(list(range(0, max_len))).unsqueeze(1).repeat(1, len(even))
+#         coef = torch.exp(math.log(10000) * -1 * even / embed_dim)
+#         even_mat = even_mat * coef
+#
+#         pe[0, :, 0::2] = torch.sin(even_mat)
+#         pe[0, :, 1::2] = torch.cos(even_mat)
+#
+#         self.register_buffer('pe', pe)
+#
+#     def forward(self, x):
+#         """
+#         Element-wise add positional embeddings to the input sequence.
+#
+#         Inputs:
+#          - x: the sequence fed to the positional encoder model, of shape
+#               (N, S, D), where N is the batch size, S is the sequence length and
+#               D is embed dim
+#         Returns:
+#          - output: the input sequence + positional encodings, of shape (N, S, D)
+#         """
+#         N, S, D = x.shape
+#         sys.stdout.write(str(S) + "\t")
+#         sys.stdout.write(str(x.shape) + "\t")
+#         sys.stdout.write(str(self.pe.shape) + "\t")
+#         sys.stdout.flush()
+#         output = x + self.pe[:, :S, :]
+#         output = self.dropout(output)
+#
+#         return output
 class PositionalEncoding(nn.Module):
-    """
-    Encodes information about the positions of the tokens in the sequence. In
-    this case, the layer has no learnable parameters, since it is a simple
-    function of sines and cosines.
-    """
 
-    def __init__(self, embed_dim, dropout=0.1, max_len=5000):
-        """
-        Construct the PositionalEncoding layer.
-
-        Inputs:
-         - embed_dim: the size of the embed dimension
-         - dropout: the dropout value
-         - max_len: the maximum possible length of the incoming sequence
-        """
-        super().__init__()
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
-        assert embed_dim % 2 == 0
 
-        pe = torch.zeros(1, max_len, embed_dim)
-
-        even = torch.arange(0, embed_dim, 2)
-        even_mat = torch.tensor(list(range(0, max_len))).unsqueeze(1).repeat(1, len(even))
-        coef = torch.exp(math.log(10000) * -1 * even / embed_dim)
-        even_mat = even_mat * coef
-
-        pe[0, :, 0::2] = torch.sin(even_mat)
-        pe[0, :, 1::2] = torch.cos(even_mat)
-
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        """
-        Element-wise add positional embeddings to the input sequence.
+        #sys.stdout.write(str(x.shape))
+        #sys.stdout.write(str(self.pe.shape))
+        #sys.stdout.flush()
+        x = x + self.pe[:, :x.size(1), :]
 
-        Inputs:
-         - x: the sequence fed to the positional encoder model, of shape
-              (N, S, D), where N is the batch size, S is the sequence length and
-              D is embed dim
-        Returns:
-         - output: the input sequence + positional encodings, of shape (N, S, D)
-        """
-        N, S, D = x.shape
-        output = x + self.pe[:, :S, :]
-        output = self.dropout(output)
+        return self.dropout(x)
 
-        return output
+
 
 
 class MultiHeadAttention(nn.Module):

@@ -74,26 +74,30 @@ def main(args):
     #                                dropout=dropout)
 
     # need to change input_dim when changing the original data size or the encoder model
+    # decoder = CaptioningTransformer(word_to_idx=word2idx, wordvec_dim=emb_dim, input_dim=emb_dim, max_length=max_len+2, num_layers=4)
     decoder = CaptioningTransformer(word_to_idx=word2idx, wordvec_dim=emb_dim, input_dim=emb_dim, max_length=max_len+2, num_layers=4)
 
 
     decoder_optimizer = torch.optim.Adam(params=decoder.parameters(),
                                          lr=decoder_lr)
     # encoder = Encoder(model_size=int(layers))
+    # TODO change num of input filters to 1
     encoder = ConvNet(3, 1, embed=emb_dim)
     encoder_optimizer = torch.optim.Adam(params=encoder.parameters(),
                                          lr=encoder_lr)
 
     step = 0
     if checkpoint:
-        checkpoint = torch.load(checkpoint)
+        checkpoint = torch.load(checkpoint, map_location=torch.device('cpu'))
         start_epoch = checkpoint['epoch'] + 1
         decoder.load_state_dict(checkpoint['decoder_state_dict'])
         decoder_optimizer.load_state_dict(checkpoint['decoder_optimizer_state_dict'])
         encoder.load_state_dict(checkpoint['encoder_state_dict'])
         encoder_optimizer.load_state_dict(checkpoint['encoder_optimizer_state_dict'])
-        step = checkpoint["step"]
+        # step = checkpoint["step"]
 
+    optimizer_to(decoder_optimizer, device)
+    optimizer_to(encoder_optimizer, device)
     encoder_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=encoder_optimizer, gamma=decay_rate)
     decoder_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=decoder_optimizer, gamma=decay_rate)
 
@@ -158,7 +162,7 @@ def main(args):
 
                 # N, H, W, C = imgs.shape
                 imgs = imgs.squeeze(1)
-                scores = decoder(imgs, caps)[:, 1:, ]
+                scores = decoder(imgs, caps[:, 0:-1])
                 # no need to decode at <end>
                 decode_lengths = (caplens.squeeze(1) - 1).tolist()
                 targets = caps[:, 1:]
@@ -216,6 +220,20 @@ def main(args):
                 writer.add_scalar("train/decoder_lr", decoder_optimizer.param_groups[0]["lr"], step)
                 writer.flush()
 
+
+        if epoch % save_freq == 0:
+            checkpoint_path = os.path.join(path, f'epoch_{epoch}.pt')
+            torch.save({
+                'epoch': epoch,
+                'encoder_state_dict': encoder.state_dict(),
+                'decoder_state_dict': decoder.state_dict(),
+                'encoder_optimizer_state_dict': encoder_optimizer.state_dict(),
+                'decoder_optimizer_state_dict': decoder_optimizer.state_dict(),
+                'loss': losses.val,
+            }, checkpoint_path)
+
+            print(f'Saved checkpoint: {checkpoint_path}')
+
         val_loss, val_top5, val_top, em, pitch, beat = validate(val_loader, beam_loader, encoder, decoder, criterion,
                                                device, att_reg, epoch, beam_size=beam_size, word2idx=word2idx, idx2word=idx2word)
         writer.add_scalar("val/loss", val_loss, step)
@@ -234,18 +252,7 @@ def main(args):
             loss=val_loss, top5=val_top5, top=val_top, em=em, pitch=pitch, beat=beat))
 
 
-        if epoch > 0 and epoch % save_freq == 0:
-            checkpoint_path = os.path.join(path, f'epoch_{epoch}.pt')
-            torch.save({
-                'epoch': epoch,
-                'encoder_state_dict': encoder.state_dict(),
-                'decoder_state_dict': decoder.state_dict(),
-                'encoder_optimizer_state_dict': encoder_optimizer.state_dict(),
-                'decoder_optimizer_state_dict': decoder_optimizer.state_dict(),
-                'loss': losses.val,
-            }, checkpoint_path)
 
-            print(f'Saved checkpoint: {checkpoint_path}')
 
         encoder_lr_scheduler.step()
         decoder_lr_scheduler.step()
@@ -288,7 +295,7 @@ def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_r
 
             imgs = imgs.squeeze(1)
             # print(imgs.shape)
-            scores = decoder(imgs, caps)[:, 1:, ]
+            scores = decoder(imgs, caps[:, 0:-1])
             # no need to decode at <end>
             decode_lengths = (caplens.squeeze(1) - 1).tolist()
             targets = caps[:, 1:]
@@ -328,10 +335,10 @@ def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_r
 
         image = encoder(image.float())
         image = image.squeeze(1)
-        seq = decoder.sample(image, device)
+        seq = decoder.sample(image, device, beam_size=1)
         if seq == caps.squeeze()[:caplens].tolist():
             counter += 1
-        print(seq)
+
 
     # with torch.no_grad():
     #     for i, (image, caps, caplens) in enumerate(
@@ -444,9 +451,27 @@ def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_r
     return losses.val, top5accs.val, topacc.val, true_EM, pitch_match_score, beat_match_score
 
 
+def optimizer_to(optim, device):
+    """
+    move optimizer to device.
+    ref: https://discuss.pytorch.org/t/moving-optimizer-from-cpu-to-gpu/96068/3
+    """
+    for param in optim.state.values():
+        # Not sure there are any global tensors in the state dict
+        if isinstance(param, torch.Tensor):
+            param.data = param.data.to(device)
+            if param._grad is not None:
+                param._grad.data = param._grad.data.to(device)
+        elif isinstance(param, dict):
+            for subparam in param.values():
+                if isinstance(subparam, torch.Tensor):
+                    subparam.data = subparam.data.to(device)
+                    if subparam._grad is not None:
+                        subparam._grad.data = subparam._grad.data.to(device)
+
 if __name__ == '__main__':
-    args = dict(label_type="word", emb_dim=200, decoder_dim=300, att_dim=300, dropout=0, start_epoch=0, epochs=80,
-                batch_size=32,
+    args = dict(label_type="word", emb_dim=200, decoder_dim=300, att_dim=300, dropout=0.2, start_epoch=0, epochs=80,
+                batch_size=16,
                 workers=0, encoder_lr=1e-3, decoder_lr=1e-3, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
                 print_freq=20, save_freq=2,
                 checkpoint=None, data_dir="different_measures", label_file="different_measures_strings.txt", model_name="test_transformer", layers=34,
