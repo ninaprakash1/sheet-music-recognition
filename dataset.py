@@ -22,13 +22,13 @@ class Dataset(torch.utils.data.Dataset):
         ID = self.list_IDs[index]
         img_name = str(ID) + ".png"
         img_path = os.path.join(self.data_dir, img_name)
-        # img = Image.open(img_path)
+        img = Image.open(img_path)
 
-        # resizer = transforms.Resize((256, 512))
-        # img = resizer(img)
+        resizer = transforms.Resize((128, 800))
+        img = resizer(img)
         # TODO write a function to call get max width
 
-        img = preprocess_img_line(img_path, 256, 4995)
+        # img = preprocess_img_line(img_path, 256, 5024)
 
         # repeat the grey scale image along the channel dimension
         X = torch.tensor(np.repeat(np.array(img)[:, :, 3][np.newaxis, :, :], 3, 0))

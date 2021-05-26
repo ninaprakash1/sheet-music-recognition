@@ -9,6 +9,65 @@ import math
 import numpy as np
 import copy
 import sys
+from models import SqueezeNet, ResNet
+
+
+class ImageEncoder(nn.Module):
+    """
+    Transformer Encoder
+    """
+    def __init__(self, backbone="squeezenet", wordvec_dim=200, num_heads=4,
+                 num_layers=2):
+
+        super().__init__()
+        if backbone == "squeezenet":
+            self.backbone = SqueezeNet(emb_dim=wordvec_dim)
+        elif backbone == "resnet18":
+            self.backbone = ResNet(model_size=18, embed_dim=wordvec_dim)
+        elif backbone == "resnet34":
+            self.backbone = ResNet(model_size=34, embed_dim=wordvec_dim)
+        self.num_heads = num_heads
+        self.positional_encoding = PositionalEncoding(wordvec_dim)
+        encoder_layer = TransformerEncoderLayer(input_dim=wordvec_dim, num_heads=num_heads)
+        self.transformer = TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.apply(self._init_weights)
+
+
+    def _init_weights(self, module):
+        """
+        Initialize the weights of the network.
+        """
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=0.02)
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+        elif isinstance(module, nn.Conv2d):
+            if module.bias:
+                module.bias.data.zero_()
+            nn.init.xavier_uniform_(module.weight.data)
+
+    def forward(self, features):
+        """
+        Given image features and caption tokens, return a distribution over the
+        possible tokens for each timestep. Note that since the entire sequence
+        of captions is provided all at once, we mask out future timesteps.
+
+        Inputs:
+         - features: image features, of shape (N, D, T') , where T' is the width of the image
+         - captions: ground truth captions, of shape (N, T)
+
+        Returns:
+         - scores: score for each token at each timestep, of shape (N, T, V)
+        """
+        x = self.backbone(features)
+        x = self.positional_encoding(x)
+        x = self.transformer(x)
+
+        return x
+
+
+
 
 
 class CaptioningTransformer(nn.Module):
@@ -89,8 +148,8 @@ class CaptioningTransformer(nn.Module):
 
         # transpose the image and transform feature representation of each vertical stripe
         # projected_features = self.visual_projection(features)
-        projected_features = F.relu(self.visual_projection(features.transpose(-1, -2)))
-
+        # projected_features = F.relu(self.visual_projection(features.transpose(-1, -2)))
+        projected_features = self.positional_encoding(features)
 
         # An additive mask for masking the future (one direction).
         # shape: [T, T]
@@ -306,6 +365,70 @@ class TransformerDecoderLayer(nn.Module):
         tgt = self.norm3(tgt)
         return tgt
 
+
+class TransformerEncoderLayer(nn.Module):
+    """
+    A single layer of a Transformer decoder, to be used with TransformerDecoder.
+    """
+    def __init__(self, input_dim, num_heads, dim_feedforward=200, dropout=0.1):
+        """
+        Construct a TransformerDecoderLayer instance.
+
+        Inputs:
+         - input_dim: Number of expected features in the input.
+         - num_heads: Number of attention heads
+         - dim_feedforward: Dimension of the feedforward network model.
+         - dropout: The dropout value.
+        """
+        super().__init__()
+        self.multihead_attn = MultiHeadAttention(input_dim, num_heads, dropout)
+        self.linear1 = nn.Linear(input_dim, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, input_dim)
+
+        self.norm1 = nn.LayerNorm(input_dim)
+        self.norm2 = nn.LayerNorm(input_dim)
+        self.norm3 = nn.LayerNorm(input_dim)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.dropout3 = nn.Dropout(dropout)
+
+        self.activation = nn.ReLU()
+
+
+    def forward(self, features):
+        """
+        Pass the inputs (and mask) through the decoder layer.
+
+        Inputs:
+        - tgt: the sequence to the decoder layer, of shape (N, T, W)
+        - memory: the sequence from the last layer of the encoder, of shape (N, S, D)
+        - tgt_mask: the parts of the target sequence to mask, of shape (T, T)
+
+        Returns:
+        - out: the Transformer features, of shape (N, T, W)
+        """
+        # Perform self-attention on the target sequence (along with dropout and
+        # layer norm).
+        # Attend to both the target sequence and the sequence from the last
+        # encoder layer.
+        tgt = features
+        tgt2 = self.multihead_attn(query=features, key=features, value=features)
+        # tgt = torch.cat([tgt, self.dropout2(tgt2)], dim=-1)
+        # tgt = self.att_proj(tgt)
+        tgt = tgt + self.dropout1(tgt2)
+        tgt = self.norm1(tgt)
+
+        # Pass
+        tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
+        tgt = tgt + self.dropout2(tgt2)
+        tgt = self.norm2(tgt)
+        return tgt
+
+
+
+
+
 def clones(module, N):
     "Produce N identical layers."
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
@@ -323,6 +446,20 @@ class TransformerDecoder(nn.Module):
 
         for mod in self.layers:
             output = mod(output, memory, tgt_mask=tgt_mask)
+
+        return output
+
+class TransformerEncoder(nn.Module):
+    def __init__(self, encoder_layer, num_layers):
+        super().__init__()
+        self.layers = clones(encoder_layer, num_layers)
+        self.num_layers = num_layers
+
+    def forward(self, tgt):
+        output = tgt
+
+        for mod in self.layers:
+            output = mod(output)
 
         return output
 

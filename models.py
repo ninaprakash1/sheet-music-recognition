@@ -2,13 +2,28 @@ import torch
 from torch import nn
 import torchvision
 
+class SqueezeNet(nn.Module):
+    def __init__(self, emb_dim=20):
+        super().__init__()
 
-class Encoder(nn.Module):
+        model_ft = torchvision.models.squeezenet1_0(pretrained=False)
+        self.model = nn.Sequential(*list(model_ft.children())[:-1])
+        self.proj = nn.Linear(512, emb_dim)
+
+    def forward(self, x):
+        # N, 3, H, W -> N, 3, H/16 -1, W/16 -1
+        out = self.model(x)
+        out = out.permute(0, 2, 3, 1)  # (batch_size, encoded_image_size, encoded_image_size, 512)
+        out = out.reshape((-1, 7*49, 512))
+        return self.proj(out)
+
+
+class ResNet(nn.Module):
     """
     Encoder.
     """
 
-    def __init__(self, model_size=18):
+    def __init__(self, model_size=18, embed_dim=20):
         super().__init__()
 
         # resnet 18, 34 output 512 channels
@@ -25,6 +40,7 @@ class Encoder(nn.Module):
 
         resnet = list(resnet.children())[:-2]
         self.resnet = nn.Sequential(*resnet)
+        self.proj = nn.Linear(512, embed_dim)
 
     def forward(self, images):
         """
@@ -34,7 +50,10 @@ class Encoder(nn.Module):
         # TODO resnet for now, but might want something faster.
         out = self.resnet(images)  # (batch_size, 512, image_size/32, image_size/32)
         out = out.permute(0, 2, 3, 1)  # (batch_size, encoded_image_size, encoded_image_size, 512)
-        return out
+        out = out.reshape((-1, 25*4, 512))
+        return self.proj(out)
+
+
 
 class Attention(nn.Module):
     """

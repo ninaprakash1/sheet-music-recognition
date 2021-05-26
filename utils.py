@@ -1,5 +1,8 @@
 import os
 import numpy as np
+import shutil
+import queue
+import torch
 import json
 from tqdm import tqdm
 from collections import Counter
@@ -104,3 +107,40 @@ def create_checkpoint_dir(model_name):
 
     return path
 
+class CheckpointSaver:
+    """
+    uses a priority queue save the best models
+
+    Args:
+        save_dir (str): Directory to save checkpoints.
+        max_checkpoints (int): Maximum number of checkpoints to keep before
+            overwriting old ones.
+    """
+    def __init__(self, save_dir, max_checkpoints):
+        self.save_dir = save_dir
+        self.max_checkpoints = max_checkpoints
+        self.best_val = None
+        self.saved_models = queue.PriorityQueue()
+
+    def save(self, checkpoint_dict, checkpoint_path, metric_val):
+        """Save model parameters to disk.
+        """
+        torch.save(checkpoint_dict, checkpoint_path)
+        if not self.best_val:
+            self.best_val = metric_val
+
+        if self.best_val <= metric_val:
+            self.best_val = metric_val
+            best_path = os.path.join(self.save_dir, 'best.pth.tar')
+            shutil.copy(checkpoint_path, best_path)
+
+        priority_order = metric_val
+
+        self.saved_models.put((priority_order, checkpoint_path))
+        if self.saved_models.qsize() > self.max_checkpoints:
+            _, worst_ckpt = self.saved_models.get()
+            try:
+                os.remove(worst_ckpt)
+                print(f'Removed checkpoint: {worst_ckpt}')
+            except OSError:
+                pass

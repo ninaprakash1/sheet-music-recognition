@@ -5,11 +5,11 @@ import torch.utils.data
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence
 import torch.nn.functional as F
-from models import Encoder, DecoderWithAttention
+from models import ResNet, DecoderWithAttention, SqueezeNet
 from utils import *
 from dataset import *
 from eval import idx2string, pitch_match, beat_match
-from transformer_decoder import CaptioningTransformer
+from transformer_decoder import CaptioningTransformer, ImageEncoder
 from CNN_simple import ConvNet
 
 # import argparse
@@ -46,11 +46,14 @@ def main(args):
     print_freq = args["print_freq"]
     save_freq = args["save_freq"]
     checkpoint = args["checkpoint"]
-    data_dir = args["data_dir"]
-    label_file = args["label_file"]
+    train_dir = args["train_dir"]
+    val_dir = args["val_dir"]
+    train_label = args["train_label"]
+    val_label = args["val_label"]
     model_name = args["model_name"]
     layers = args["layers"]
     beam_size = args["beam_size"]
+    backbone = args["backbone"]
 
     # make checkpoint path
     path = create_checkpoint_dir(model_name)
@@ -61,10 +64,15 @@ def main(args):
     corpus, word2idx, max_len = None, None, None
     # pad needs to be the last element of word2idx
     if (label_type == 'char'):
-        corpus, word2idx, max_len = read_captions(label_file)
+        train_corpus, word2idx, max_len = read_captions(train_label)
+        val_corpus, _, val_max_len = read_captions(val_label)
     elif (label_type == 'word'):
-        corpus, word2idx, idx2word, max_len = read_captions_word(label_file)
-    corpus_idx = convert_corpus_idx(word2idx, corpus, max_len)
+        train_corpus, word2idx, idx2word, max_len = read_captions_word(train_label)
+        val_corpus, _, _, val_max_len = read_captions_word(val_label)
+    if val_max_len > max_len:
+        max_len = val_max_len
+    train_corpus_idx = convert_corpus_idx(word2idx, train_corpus, max_len)
+    val_corpus_idx = convert_corpus_idx(word2idx, val_corpus, max_len)
 
     # TODO add if statment
     # decoder = DecoderWithAttention(attention_dim=att_dim,
@@ -81,25 +89,33 @@ def main(args):
     decoder_optimizer = torch.optim.Adam(params=decoder.parameters(),
                                          lr=decoder_lr)
     # encoder = Encoder(model_size=int(layers))
+    # encoder = SqueezeNet(batch_size=batch_size, emb_dim=emb_dim)
+    encoder = ImageEncoder(backbone=backbone, wordvec_dim=emb_dim)
+
     # TODO change num of input filters to 1
-    encoder = ConvNet(3, 1, embed=emb_dim)
+    # encoder = ConvNet(3, 1, embed=emb_dim)
     encoder_optimizer = torch.optim.Adam(params=encoder.parameters(),
                                          lr=encoder_lr)
+    encoder_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=encoder_optimizer, gamma=decay_rate)
+    decoder_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=decoder_optimizer, gamma=decay_rate)
+
+    checkpoint_saver = CheckpointSaver(path, 5)
 
     step = 0
     if checkpoint:
         checkpoint = torch.load(checkpoint, map_location=torch.device('cpu'))
-        start_epoch = checkpoint['epoch'] + 1
+        start_epoch = checkpoint['epoch']
         decoder.load_state_dict(checkpoint['decoder_state_dict'])
         decoder_optimizer.load_state_dict(checkpoint['decoder_optimizer_state_dict'])
         encoder.load_state_dict(checkpoint['encoder_state_dict'])
         encoder_optimizer.load_state_dict(checkpoint['encoder_optimizer_state_dict'])
-        # step = checkpoint["step"]
+        encoder_lr_scheduler.load_state_dict(checkpoint["encoder_lr_scheduler_state_dict"])
+        decoder_lr_scheduler.load_state_dict(checkpoint["decoder_lr_scheduler_state_dict"])
+        step = checkpoint["step"]
 
     optimizer_to(decoder_optimizer, device)
     optimizer_to(encoder_optimizer, device)
-    encoder_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=encoder_optimizer, gamma=decay_rate)
-    decoder_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=decoder_optimizer, gamma=decay_rate)
+
 
     # Move to GPU, if available
     decoder = decoder.to(device)
@@ -113,10 +129,19 @@ def main(args):
                                      std=[0.229, 0.224, 0.225])
 
     # TODO might want to split the data into train, val, test, or we can just generate more test data
-    data = Dataset(data_dir, list(range(0, len(corpus))), corpus_idx)
+    data = Dataset(train_dir, list(range(0, 7500)), train_corpus_idx)
 
-    # split = [4, 4, len(data)-8]
-    split = [len(data)-500, 500, 0]
+    # train_idx = list(set(range(20000)) - set(range(0, 7500, 15)))
+    # val_idx = list(range(0, 7500, 15))
+
+    # train_idx = list(range(0, 20000))
+    # val_idx = list(range(0, 7500, 6))
+
+    # train_data = Dataset(train_dir, train_idx, train_corpus_idx)
+    # val_data = Dataset(val_dir, val_idx, val_corpus_idx)
+    split = [4, 3, len(data)-7]
+    # split = [len(data)-500, 500, 0]
+    # split = [1, 6999]
     train_data, val_data, rest = torch.utils.data.dataset.random_split(data, split)
 
     train_loader = torch.utils.data.DataLoader(
@@ -129,7 +154,7 @@ def main(args):
     beam_loader = torch.utils.data.DataLoader(
         val_data, batch_size=1, shuffle=False, num_workers=workers, pin_memory=True)
 
-    for epoch in range(start_epoch, epochs):
+    for epoch in range(start_epoch+1, epochs+1):
 
         batch_time = AverageMeter()
         data_time = AverageMeter()
@@ -161,7 +186,7 @@ def main(args):
                 # targets = caps_sorted[:, 1:]
 
                 # N, H, W, C = imgs.shape
-                imgs = imgs.squeeze(1)
+                # imgs = imgs.squeeze(1)
                 scores = decoder(imgs, caps[:, 0:-1])
                 # no need to decode at <end>
                 decode_lengths = (caplens.squeeze(1) - 1).tolist()
@@ -220,20 +245,6 @@ def main(args):
                 writer.add_scalar("train/decoder_lr", decoder_optimizer.param_groups[0]["lr"], step)
                 writer.flush()
 
-
-        if epoch % save_freq == 0:
-            checkpoint_path = os.path.join(path, f'epoch_{epoch}.pt')
-            torch.save({
-                'epoch': epoch,
-                'encoder_state_dict': encoder.state_dict(),
-                'decoder_state_dict': decoder.state_dict(),
-                'encoder_optimizer_state_dict': encoder_optimizer.state_dict(),
-                'decoder_optimizer_state_dict': decoder_optimizer.state_dict(),
-                'loss': losses.val,
-            }, checkpoint_path)
-
-            print(f'Saved checkpoint: {checkpoint_path}')
-
         val_loss, val_top5, val_top, em, pitch, beat = validate(val_loader, beam_loader, encoder, decoder, criterion,
                                                device, att_reg, epoch, beam_size=beam_size, word2idx=word2idx, idx2word=idx2word)
         writer.add_scalar("val/loss", val_loss, step)
@@ -251,8 +262,21 @@ def main(args):
               'beat {beat: .3f}'.format(
             loss=val_loss, top5=val_top5, top=val_top, em=em, pitch=pitch, beat=beat))
 
-
-
+        if epoch % save_freq == 0:
+            checkpoint_path = os.path.join(path, f'epoch_{epoch}.pt')
+            checkpoint_dict = {
+                'epoch': epoch,
+                'encoder_state_dict': encoder.state_dict(),
+                'decoder_state_dict': decoder.state_dict(),
+                'encoder_optimizer_state_dict': encoder_optimizer.state_dict(),
+                'decoder_optimizer_state_dict': decoder_optimizer.state_dict(),
+                'decoder_lr_scheduler_state_dict': decoder_lr_scheduler.state_dict(),
+                'encoder_lr_scheduler_state_dict': encoder_lr_scheduler.state_dict(),
+                'loss': losses.val,
+                'step': step
+            }
+            checkpoint_saver.save(checkpoint_dict, checkpoint_path, em)
+            print(f'Saved checkpoint: {checkpoint_path}')
 
         encoder_lr_scheduler.step()
         decoder_lr_scheduler.step()
@@ -335,7 +359,7 @@ def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_r
 
         image = encoder(image.float())
         image = image.squeeze(1)
-        seq = decoder.sample(image, device, beam_size=1)
+        seq = decoder.sample(image, device, beam_size=10)
         if seq == caps.squeeze()[:caplens].tolist():
             counter += 1
 
@@ -470,10 +494,13 @@ def optimizer_to(optim, device):
                         subparam._grad.data = subparam._grad.data.to(device)
 
 if __name__ == '__main__':
-    args = dict(label_type="word", emb_dim=200, decoder_dim=300, att_dim=300, dropout=0.2, start_epoch=0, epochs=80,
+    args = dict(label_type="word", emb_dim=200, decoder_dim=300, att_dim=300, dropout=0.2, start_epoch=0, epochs=100,
                 batch_size=16,
-                workers=0, encoder_lr=1e-3, decoder_lr=1e-3, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
-                print_freq=20, save_freq=2,
-                checkpoint=None, data_dir="different_measures", label_file="different_measures_strings.txt", model_name="test_transformer", layers=34,
+                workers=0, encoder_lr=0.0001, decoder_lr=0.0001, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
+                print_freq=100, save_freq=1,
+                backbone="resnet34", # [resnet18, resnet34, squeezenet, rnn]
+                checkpoint=None, train_dir="different_measures", val_dir="different_measures",
+                train_label="different_measures_strings.txt", val_label="different_measures_strings.txt", model_name="resnet_transformer",
+                layers=18,
                 beam_size=10)
     main(args)
