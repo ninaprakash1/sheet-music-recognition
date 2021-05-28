@@ -9,14 +9,13 @@ class SqueezeNet(nn.Module):
 
         model_ft = torchvision.models.squeezenet1_0(pretrained=False)
         self.model = nn.Sequential(*list(model_ft.children())[:-1])
-        self.proj = nn.Linear(512, emb_dim)
 
     def forward(self, x):
         # N, 3, H, W -> N, 3, H/16 -1, W/16 -1
         out = self.model(x)
         out = out.permute(0, 2, 3, 1)  # (batch_size, encoded_image_size, encoded_image_size, 512)
         out = out.reshape((-1, 7*49, 512))
-        return self.proj(out)
+        return out
 
 
 class ResNet(nn.Module):
@@ -41,18 +40,17 @@ class ResNet(nn.Module):
 
         resnet = list(resnet.children())[:-2]
         self.resnet = nn.Sequential(*resnet)
-        self.proj = nn.Linear(512, embed_dim)
+
 
     def forward(self, images):
         """
         :param images: images, a tensor of dimensions (batch_size, 3, image_size, image_size)
         :return: encoded images
         """
-        # TODO resnet for now, but might want something faster.
         out = self.resnet(images)  # (batch_size, 512, image_size/32, image_size/32)
         out = out.permute(0, 2, 3, 1)  # (batch_size, encoded_image_size, encoded_image_size, 512)
         out = out.reshape((-1, 25*4, 512))
-        return self.proj(out)
+        return out
 
 
 
@@ -96,7 +94,7 @@ class RNN_Decoder(nn.Module):
     Decoder.
     """
 
-    def __init__(self, attention_dim, embed_dim, decoder_dim, vocab_size, word2idx, encoder_dim=512, dropout=0.5):
+    def __init__(self, attention_dim, embed_dim, decoder_dim, word2idx, encoder_dim=512, dropout=0.5):
         """
         :param attention_dim: size of attention network
         :param embed_dim: embedding size
@@ -129,8 +127,8 @@ class RNN_Decoder(nn.Module):
         self.init_c = nn.Linear(encoder_dim, decoder_dim)  # linear layer to find initial cell state of LSTMCell
         self.f_beta = nn.Linear(decoder_dim, encoder_dim)  # linear layer to create a sigmoid-activated gate
         self.sigmoid = nn.Sigmoid()
-        self.fc = nn.Linear(decoder_dim, vocab_size)  # linear layer to find scores over vocabulary
-        self.init_weights()  # initialize some layers with the uniform distribution
+        self.fc = nn.Linear(decoder_dim, vocab_size)
+        self.init_weights()
 
     def init_weights(self):
         """
@@ -152,7 +150,7 @@ class RNN_Decoder(nn.Module):
         c = self.init_c(mean_encoder_out)
         return h, c
 
-    def forward(self, encoder_out, encoded_captions, caption_lengths):
+    def forward(self, encoder_out, encoded_captions, caption_lengths, device):
         """
         :param encoder_out: encoded images, a tensor of dimension (batch_size, enc_image_size, enc_image_size, encoder_dim)
         :param encoded_captions: encoded captions, a tensor of dimension (batch_size, max_caption_length)
@@ -161,12 +159,6 @@ class RNN_Decoder(nn.Module):
         """
 
         batch_size = encoder_out.size(0)
-        encoder_dim = encoder_out.size(-1)
-        vocab_size = self.vocab_size
-
-        # Flatten image
-        encoder_out = encoder_out.view(batch_size, -1, encoder_dim)  # (batch_size, num_pixels, encoder_dim)
-        num_pixels = encoder_out.size(1)
 
         # Sort input data by decreasing lengths; why? apparent below
         caption_lengths, sort_ind = caption_lengths.squeeze(1).sort(dim=0, descending=True)
@@ -175,14 +167,13 @@ class RNN_Decoder(nn.Module):
 
         # Embedding
         embeddings = self.embedding(encoded_captions)  # (batch_size, max_caption_length, embed_dim)
-
         h, c = self.init_hidden_state(encoder_out)  # (batch_size, decoder_dim)
 
         # doesn't need to decode at <end>
         decode_lengths = (caption_lengths - 1).tolist()
 
-        predictions = torch.zeros(batch_size, max(decode_lengths), vocab_size).to(device)
-        alphas = torch.zeros(batch_size, max(decode_lengths), num_pixels).to(device)
+        predictions = torch.zeros(batch_size, max(decode_lengths), self.vocab_size).to(device)
+        alphas = torch.zeros(batch_size, max(decode_lengths), encoder_out.shape[1]).to(device)
 
 
         for t in range(max(decode_lengths)):
@@ -216,14 +207,14 @@ class RNN_Decoder(nn.Module):
         complete_seqs = list()
         complete_seqs_scores = list()
 
-        step = 1
+
         h, c = self.init_hidden_state(features)
         # s is a number less than or equal to k, because sequences are removed from this process once they hit <end>
-        for i in range()
+        for step in range(1, max_decode_length + 1):
 
             embeddings = self.embedding(k_prev_words).squeeze(1)  # (s, embed_dim)
 
-            awe, _ = self.attention(encoder_out, h)  # (s, encoder_dim), (s, num_pixels)
+            awe, _ = self.attention(features, h)  # (s, encoder_dim), (s, num_pixels)
 
             gate = self.sigmoid(self.f_beta(h))  # gating scalar, (s, encoder_dim)
             awe = gate * awe
@@ -242,15 +233,15 @@ class RNN_Decoder(nn.Module):
                 top_k_scores, top_k_words = scores.view(-1).topk(k, 0, True, True)  # (s)
 
             # Convert unrolled indices to actual indices of scores
-            prev_word_inds = top_k_words // len(word2idx)  # (s)
-            next_word_inds = top_k_words % len(word2idx)  # (s)
+            prev_word_inds = top_k_words // self.vocab_size # (s)
+            next_word_inds = top_k_words % self.vocab_size  # (s)
 
             # Add new words to sequences
             seqs = torch.cat([seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1)  # (s, step+1)
 
             # Which sequences are incomplete (didn't reach <end>)?
             incomplete_inds = [ind for ind, next_word in enumerate(next_word_inds) if
-                               next_word != word2idx['<end>']]
+                               next_word != self._end]
             complete_inds = list(set(range(len(next_word_inds))) - set(incomplete_inds))
 
             # Set aside complete sequences
@@ -265,13 +256,9 @@ class RNN_Decoder(nn.Module):
             seqs = seqs[incomplete_inds]
             h = h[prev_word_inds[incomplete_inds]]
             c = c[prev_word_inds[incomplete_inds]]
-            encoder_out = encoder_out[prev_word_inds[incomplete_inds]]
+            features = features[prev_word_inds[incomplete_inds]]
             top_k_scores = top_k_scores[incomplete_inds].unsqueeze(1)
             k_prev_words = next_word_inds[incomplete_inds].unsqueeze(1)
-
-            if step > 50:
-                break
-            step += 1
 
         if len(complete_seqs) > 0:
             i = complete_seqs_scores.index(max(complete_seqs_scores))
@@ -279,5 +266,5 @@ class RNN_Decoder(nn.Module):
         else:
             i = int(scores.argmax() // scores.shape[1])
             seq = seqs[i].tolist()
-        if seq == caps.squeeze()[:caplens].tolist():
-            counter += 1
+
+        return seq

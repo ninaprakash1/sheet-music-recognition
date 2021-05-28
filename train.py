@@ -5,7 +5,7 @@ import torch.utils.data
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence
 import torch.nn.functional as F
-from models import ResNet, DecoderWithAttention, SqueezeNet
+from models import ResNet, RNN_Decoder, SqueezeNet
 from utils import *
 from dataset import *
 from eval import idx2string, pitch_match, beat_match
@@ -54,6 +54,7 @@ def main(args):
     layers = args["layers"]
     beam_size = args["beam_size"]
     backbone = args["backbone"]
+    decode_type = args["decode_type"]
 
     # make checkpoint path
     path = create_checkpoint_dir(model_name)
@@ -74,28 +75,19 @@ def main(args):
     train_corpus_idx = convert_corpus_idx(word2idx, train_corpus, max_len)
     val_corpus_idx = convert_corpus_idx(word2idx, val_corpus, max_len)
 
-    # TODO add if statment
-    # decoder = DecoderWithAttention(attention_dim=att_dim,
-    #                                embed_dim=emb_dim,
-    #                                decoder_dim=decoder_dim,
-    #                                vocab_size=len(word2idx),
-    #                                dropout=dropout)
+    encoder, decoder = None, None
+    if decode_type == "RNN":
+        decoder = RNN_Decoder(attention_dim=att_dim, embed_dim=emb_dim, decoder_dim=decoder_dim,
+                              word2idx=word2idx, dropout=dropout)
+        encoder = ImageEncoder(backbone=backbone, wordvec_dim=emb_dim, transformer_encode=False)
+    elif decode_type == "Transformer":
+        decoder = CaptioningTransformer(word2idx=word2idx, wordvec_dim=emb_dim, input_dim=emb_dim, max_length=max_len+2, num_layers=4)
+        encoder = ImageEncoder(backbone=backbone, wordvec_dim=emb_dim)
 
-    # need to change input_dim when changing the original data size or the encoder model
-    # decoder = CaptioningTransformer(word_to_idx=word2idx, wordvec_dim=emb_dim, input_dim=emb_dim, max_length=max_len+2, num_layers=4)
-    decoder = CaptioningTransformer(word_to_idx=word2idx, wordvec_dim=emb_dim, input_dim=emb_dim, max_length=max_len+2, num_layers=4)
-
-
-    decoder_optimizer = torch.optim.Adam(params=decoder.parameters(),
-                                         lr=decoder_lr)
-    # encoder = Encoder(model_size=int(layers))
-    # encoder = SqueezeNet(batch_size=batch_size, emb_dim=emb_dim)
-    encoder = ImageEncoder(backbone=backbone, wordvec_dim=emb_dim)
-
-    # TODO change num of input filters to 1
-    # encoder = ConvNet(3, 1, embed=emb_dim)
+    decoder_optimizer = torch.optim.Adam(params=decoder.parameters(), lr=decoder_lr)
     encoder_optimizer = torch.optim.Adam(params=encoder.parameters(),
                                          lr=encoder_lr)
+
     encoder_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=encoder_optimizer, gamma=decay_rate)
     decoder_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=decoder_optimizer, gamma=decay_rate)
 
@@ -109,8 +101,8 @@ def main(args):
         decoder_optimizer.load_state_dict(checkpoint['decoder_optimizer_state_dict'])
         encoder.load_state_dict(checkpoint['encoder_state_dict'])
         encoder_optimizer.load_state_dict(checkpoint['encoder_optimizer_state_dict'])
-        # encoder_lr_scheduler.load_state_dict(checkpoint["encoder_lr_scheduler_state_dict"])
-        # decoder_lr_scheduler.load_state_dict(checkpoint["decoder_lr_scheduler_state_dict"])
+        encoder_lr_scheduler.load_state_dict(checkpoint["encoder_lr_scheduler_state_dict"])
+        decoder_lr_scheduler.load_state_dict(checkpoint["decoder_lr_scheduler_state_dict"])
         step = checkpoint["step"]
 
     optimizer_to(decoder_optimizer, device)
@@ -128,12 +120,6 @@ def main(args):
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
-    # TODO might want to split the data into train, val, test, or we can just generate more test data
-    # data = Dataset(train_dir, list(range(0, 7500)), train_corpus_idx)
-
-    # train_idx = list(set(range(20000)) - set(range(0, 7500, 15)))
-    # val_idx = list(range(0, 7500, 15))
-
 
     val_idx = list(range(1, 20000, 20))
     test_idx = list(range(0, 20000, 20))
@@ -144,10 +130,10 @@ def main(args):
     train_data = Dataset(train_dir, train_idx, train_corpus_idx)
     val_data = Dataset(val_dir, val_idx, val_corpus_idx)
 
-    # split = [4, 3, len(data)-7]
+    split = [4, 3, len(train_data)-7]
     # split = [len(data)-500, 500, 0]
     # split = [1, 6999]
-    # train_data, val_data, rest = torch.utils.data.dataset.random_split(data, split)
+    train_data, val_data, rest = torch.utils.data.dataset.random_split(train_data, split)
 
     train_loader = torch.utils.data.DataLoader(
         train_data, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
@@ -184,35 +170,24 @@ def main(args):
 
                 imgs = encoder(imgs.float())
 
-                # TODO add if statement
-                # # use attention + RNN
-                # scores, caps_sorted, decode_lengths, alphas, sort_ind = decoder(imgs, caps, caplens)
-                # # get rid of <start>
-                # targets = caps_sorted[:, 1:]
+                if decode_type == "RNN":
+                    scores, caps_sorted, decode_lengths, alphas, sort_ind = decoder(imgs, caps, caplens, device)
+                    targets = caps_sorted[:, 1:]
+                elif decode_type == "transformer":
+                    scores = decoder(imgs, caps[:, 0:-1])
+                    targets = caps[:, 1:]
 
-                # N, H, W, C = imgs.shape
-                # imgs = imgs.squeeze(1)
-
-                # captions, _, _ = decoder.decode(imgs, device, max_length=max_len+2)
-
-
-                scores = decoder(imgs, caps[:, 0:-1])
-                # # no need to decode at <end>
+                # no need to decode at <end>
                 decode_lengths = (caplens.squeeze(1) - 1).tolist()
-                targets = caps[:, 1:]
 
-
-                #
-                # # more efficient computation
+                # more efficient computation
                 scores = pack_padded_sequence(scores, decode_lengths, batch_first=True, enforce_sorted=False)
                 targets = pack_padded_sequence(targets, decode_lengths, batch_first=True, enforce_sorted=False)
 
-                #
                 loss = criterion(scores.data, targets.data)
-                # TODO add if statement
-                # doubly stochastic attention regularization
-                # # use attention + RNN
-                # loss += att_reg * ((1. - alphas.sum(dim=1)) ** 2).mean()
+
+                if decode_type == "RNN":
+                    loss += att_reg * ((1. - alphas.sum(dim=1)) ** 2).mean()
 
                 decoder_optimizer.zero_grad()
                 encoder_optimizer.zero_grad()
@@ -249,21 +224,14 @@ def main(args):
                         loss=losses, top5=top5accs, EM=EM))
 
                 # log to Tensorboard
-                writer.add_scalar("train/loss", losses.val, step)
-                writer.add_scalar("train/top five accuracy", top5accs.val, step)
-                writer.add_scalar("train/EM", EM.val, step)
-                writer.add_scalar("train/encoder_lr", encoder_optimizer.param_groups[0]["lr"], step)
-                writer.add_scalar("train/decoder_lr", decoder_optimizer.param_groups[0]["lr"], step)
-                writer.flush()
+                log_train(writer, losses.val, top5accs.val, EM.val, encoder_optimizer.param_groups[0]["lr"],
+                          decoder_optimizer.param_groups[0]["lr"], step)
 
         val_loss, val_top5, val_top, em, pitch, beat = validate(val_loader, beam_loader, encoder, decoder, criterion,
-                                               device, att_reg, epoch, beam_size=beam_size, word2idx=word2idx, idx2word=idx2word)
-        writer.add_scalar("val/loss", val_loss, step)
-        writer.add_scalar("val/top five accuracy", val_top5, step)
-        writer.add_scalar("val/EM", val_top, step)
-        writer.add_scalar("val/true EM", em, step)
-        writer.add_scalar("val/pitch", pitch, step)
-        writer.add_scalar("val/beat", beat, step)
+                                               device, att_reg, epoch, decode_type, beam_size=beam_size, idx2word=idx2word)
+
+        log_val(writer, val_loss, val_top5, val_top, em, pitch, beat, step)
+
         print('\nValidation\t'
               'Loss {loss:.4f}\t'
               'top5 {top5:.3f}\t'
@@ -293,7 +261,7 @@ def main(args):
         decoder_lr_scheduler.step()
 
 
-def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_reg, epoch, beam_size=10, word2idx=None, idx2word=None):
+def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_reg, epoch, decode_type, beam_size=10, idx2word=None):
     """
     Performs one epoch's validation.
 
@@ -321,29 +289,24 @@ def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_r
             caplens = caplens.to(device)
 
             imgs = encoder(imgs.float())
-            #scores, caps_sorted, decode_lengths, alphas, sort_ind = decoder(imgs, caps, caplens)
-
-            #targets = caps_sorted[:, 1:]
-
-            #scores = pack_padded_sequence(scores, decode_lengths, batch_first=True)
-            #targets = pack_padded_sequence(targets, decode_lengths, batch_first=True)
-
-            imgs = imgs.squeeze(1)
-            # print(imgs.shape)
-            scores = decoder(imgs, caps[:, 0:-1])
+            if decode_type == "RNN":
+                scores, caps_sorted, decode_lengths, alphas, sort_ind = decoder(imgs, caps, caplens, device)
+                targets = caps_sorted[:, 1:]
+            elif decode_type == "Transformer":
+                scores = decoder(imgs, caps[:, 0:-1])
+                targets = caps[:, 1:]
             # no need to decode at <end>
             decode_lengths = (caplens.squeeze(1) - 1).tolist()
-            targets = caps[:, 1:]
+
 
             # more efficient computation
             scores = pack_padded_sequence(scores, decode_lengths, batch_first=True, enforce_sorted=False)
             targets = pack_padded_sequence(targets, decode_lengths, batch_first=True, enforce_sorted=False)
 
-            # loss = criterion(scores.data, targets.data)
-
             loss = criterion(scores.data, targets.data)
 
-            # loss += att_reg * ((1. - alphas.sum(dim=1)) ** 2).mean()
+            if decode_type == "RNN":
+                loss += att_reg * ((1. - alphas.sum(dim=1)) ** 2).mean()
 
             losses.update(loss.item(), sum(decode_lengths))
             batch_time.update(time.time() - start)
@@ -370,118 +333,19 @@ def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_r
 
         image = encoder(image.float())
         image = image.squeeze(1)
-        seq = decoder.sample(image, device, beam_size=1)
+        seq = decoder.sample(image, device, beam_size=10)
         if seq == caps.squeeze()[:caplens].tolist():
             counter += 1
 
-
-    # with torch.no_grad():
-    #     for i, (image, caps, caplens) in enumerate(
-    #             tqdm(beam_loader, desc="EVALUATING AT BEAM SIZE " + str(beam_size), position=0, leave=True)):
-    #
-    #         k = beam_size
-    #
-    #         image = image.to(device)
-    #
-    #         encoder_out = encoder(image.float())  # (1, enc_image_size, enc_image_size, encoder_dim)
-    #         encoder_dim = encoder_out.size(3)
-    #
-    #         encoder_out = encoder_out.view(1, -1, encoder_dim)  # (1, num_pixels, encoder_dim)
-    #         num_pixels = encoder_out.size(1)
-    #
-    #         encoder_out = encoder_out.expand(k, num_pixels, encoder_dim)  # (k, num_pixels, encoder_dim)
-    #
-    #         # Tensor to store top k previous words at each step; now they're just <start>
-    #         k_prev_words = torch.LongTensor([[word2idx['<start>']]] * k).to(device)  # (k, 1)
-    #
-    #         # Tensor to store top k sequences; now they're just <start>
-    #         seqs = k_prev_words  # (k, 1)
-    #
-    #         # Tensor to store top k sequences' scores; now they're just 0
-    #         top_k_scores = torch.zeros(k, 1).to(device)  # (k, 1)
-    #
-    #         # Lists to store completed sequences and scores
-    #         complete_seqs = list()
-    #         complete_seqs_scores = list()
-    #
-    #         step = 1
-    #         h, c = decoder.init_hidden_state(encoder_out)
-    #         # s is a number less than or equal to k, because sequences are removed from this process once they hit <end>
-    #         while True:
-    #
-    #             embeddings = decoder.embedding(k_prev_words).squeeze(1)  # (s, embed_dim)
-    #
-    #             awe, _ = decoder.attention(encoder_out, h)  # (s, encoder_dim), (s, num_pixels)
-    #
-    #             gate = decoder.sigmoid(decoder.f_beta(h))  # gating scalar, (s, encoder_dim)
-    #             awe = gate * awe
-    #
-    #             h, c = decoder.decode_step(torch.cat([embeddings, awe], dim=1), (h, c))  # (s, decoder_dim)
-    #
-    #             scores = decoder.fc(h)  # (s, vocab_size)
-    #             scores = F.log_softmax(scores, dim=1)
-    #
-    #             scores = top_k_scores.expand_as(scores) + scores  # (s, vocab_size)
-    #
-    #             if step == 1:
-    #                 top_k_scores, top_k_words = scores[0].topk(k, 0, True, True)  # (s)
-    #             else:
-    #                 # Unroll and find top scores, and their unrolled indices
-    #                 top_k_scores, top_k_words = scores.view(-1).topk(k, 0, True, True)  # (s)
-    #
-    #             # Convert unrolled indices to actual indices of scores
-    #             prev_word_inds = top_k_words // len(word2idx)  # (s)
-    #             next_word_inds = top_k_words % len(word2idx)  # (s)
-    #
-    #             # Add new words to sequences
-    #             seqs = torch.cat([seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1)  # (s, step+1)
-    #
-    #             # Which sequences are incomplete (didn't reach <end>)?
-    #             incomplete_inds = [ind for ind, next_word in enumerate(next_word_inds) if
-    #                                next_word != word2idx['<end>']]
-    #             complete_inds = list(set(range(len(next_word_inds))) - set(incomplete_inds))
-    #
-    #             # Set aside complete sequences
-    #             if len(complete_inds) > 0:
-    #                 complete_seqs.extend(seqs[complete_inds].tolist())
-    #                 complete_seqs_scores.extend(top_k_scores[complete_inds])
-    #             k -= len(complete_inds)  # reduce beam length accordingly
-    #
-    #             # Proceed with incomplete sequences
-    #             if k == 0:
-    #                 break
-    #             seqs = seqs[incomplete_inds]
-    #             h = h[prev_word_inds[incomplete_inds]]
-    #             c = c[prev_word_inds[incomplete_inds]]
-    #             encoder_out = encoder_out[prev_word_inds[incomplete_inds]]
-    #             top_k_scores = top_k_scores[incomplete_inds].unsqueeze(1)
-    #             k_prev_words = next_word_inds[incomplete_inds].unsqueeze(1)
-    #
-    #             if step > 50:
-    #                 break
-    #             step += 1
-    #
-    #         if len(complete_seqs) > 0:
-    #             i = complete_seqs_scores.index(max(complete_seqs_scores))
-    #             seq = complete_seqs[i]
-    #         else:
-    #             i = int(scores.argmax() // scores.shape[1])
-    #             seq = seqs[i].tolist()
-    #         if seq == caps.squeeze()[:caplens].tolist():
-    #             counter += 1
-    #
         pred_seq = idx2string(seq, idx2word)
         target_seq = idx2string(caps.squeeze()[:caplens].tolist(), idx2word)
 
         pitch_match_score += pitch_match(pred_seq, target_seq)
         beat_match_score += beat_match(pred_seq, target_seq)
-    #
+
     true_EM = counter / len(val_loader.dataset)
     pitch_match_score /= len(val_loader.dataset)
     beat_match_score /= len(val_loader.dataset)
-    # true_EM = 0
-    # pitch_match_score = 0
-    # beat_match_score = 0
 
     return losses.val, top5accs.val, topacc.val, true_EM, pitch_match_score, beat_match_score
 
@@ -509,9 +373,9 @@ if __name__ == '__main__':
                 batch_size=16,
                 workers=0, encoder_lr=0.0001, decoder_lr=0.0001, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
                 print_freq=100, save_freq=100,
-                backbone="squeezenet", # [resnet18, resnet34, squeezenet, rnn]
+                backbone="squeezenet", # [resnet18, resnet34, squeezenet]
                 checkpoint=None, train_dir="full_data", val_dir="full_data",
                 train_label="mixed_strings.txt", val_label="mixed_strings.txt", model_name="resnet_transformer",
                 layers=18,
-                beam_size=10)
+                beam_size=10, decode_type="RNN")
     main(args)

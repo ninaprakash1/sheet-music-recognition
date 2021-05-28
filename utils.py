@@ -144,3 +144,20 @@ class CheckpointSaver:
                 print(f'Removed checkpoint: {worst_ckpt}')
             except OSError:
                 pass
+
+def log_train(writer, train_loss, train_top5, train_top, encoder_lr, decoder_lr, step):
+    writer.add_scalar("train/loss", train_loss, step)
+    writer.add_scalar("train/top_five_accuracy", train_top5, step)
+    writer.add_scalar("train/EM", train_top, step)
+    writer.add_scalar("train/encoder_lr", encoder_lr, step)
+    writer.add_scalar("train/decoder_lr", decoder_lr, step)
+    writer.flush()
+
+def log_val(writer, val_loss, val_top5, val_top, em, pitch, beat, step):
+    writer.add_scalar("val/loss", val_loss, step)
+    writer.add_scalar("val/top_five_accuracy", val_top5, step)
+    writer.add_scalar("val/EM", val_top, step)
+    writer.add_scalar("val/true_EM", em, step)
+    writer.add_scalar("val/pitch", pitch, step)
+    writer.add_scalar("val/beat", beat, step)
+    writer.flush()

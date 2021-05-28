@@ -32,6 +32,8 @@ class ImageEncoder(nn.Module):
         encoder_layer = TransformerEncoderLayer(input_dim=wordvec_dim, num_heads=num_heads)
         self.transformer = TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.apply(self._init_weights)
+        if transformer_encode == True:
+            self.proj = nn.Linear(512, wordvec_dim)
 
 
     def _init_weights(self, module):
@@ -51,8 +53,8 @@ class ImageEncoder(nn.Module):
     def forward(self, features):
 
         x = self.backbone(features)
-
         if self.transformer_encode:
+            x = self.proj(x)
             x = self.positional_encoding(x)
             x = self.transformer(x)
 
@@ -167,7 +169,7 @@ class CaptioningTransformer(nn.Module):
 
         return scores
 
-    def sample(self, features, device, max_length=50, beam_size=10):
+    def sample(self, features, device, max_decode_length=40, beam_size=10):
         """
         Given image features, use greedy decoding to predict the image caption.
 
@@ -178,34 +180,6 @@ class CaptioningTransformer(nn.Module):
         Returns:
          - captions: captions for each example, of shape (N, max_length)
         """
-        # with torch.no_grad():
-        #     features = torch.Tensor(features)
-        #     N = features.shape[0]
-        #
-        #     # Create an empty captions tensor (where all tokens are NULL).
-        #     captions = self._null * np.ones((N, max_length), dtype=np.int32)
-        #
-        #     # Create a partial caption, with only the start token.
-        #     partial_caption = self._start * np.ones(N, dtype=np.int32)
-        #     partial_caption = torch.LongTensor(partial_caption)
-        #     # [N] -> [N, 1]
-        #     partial_caption = partial_caption.unsqueeze(1)
-        #
-        #     for t in range(max_length):
-        #         # Predict the next token (ignoring all other time steps).
-        #         output_logits = self.forward(features, partial_caption)
-        #         output_logits = output_logits[:, -1, :]
-        #
-        #         # Choose the most likely word ID from the vocabulary.
-        #         # [N, V] -> [N]
-        #         word = torch.argmax(output_logits, dim=1)
-        #
-        #         # Update our overall caption and our current partial caption.
-        #         captions[:, t] = word.numpy()
-        #         word = word.unsqueeze(1)
-        #         partial_caption = torch.cat([partial_caption, word], dim=1)
-        #
-        #     return captions
 
 
         with torch.no_grad():
@@ -221,7 +195,7 @@ class CaptioningTransformer(nn.Module):
             complete_seqs_scores = list()
 
             # start with the token after <start>
-            for step in range(1, max_length+1):
+            for step in range(1, max_decode_length+1):
 
                 # features = features.repeat(k, 1, 1)
                 # Predict the next token (ignoring all other time steps).
@@ -273,11 +247,13 @@ class CaptioningTransformer(nn.Module):
 
         return:
             one_hots: greedy decoding result for each time step
-            scores: conditional log
+            caps_len: the length of each decoded sequence (including <start> and <end>)
         """
 
         N = features.shape[0]
-        scores = torch.zeros((N, 1))
+
+        # score for reinforcement training
+        # scores = torch.zeros((N, 1))
 
 
         # Create an empty captions tensor (where all tokens are NULL).
@@ -327,7 +303,7 @@ class CaptioningTransformer(nn.Module):
             for idx in incomplete_inds:
                 caps_len[idx] = max_length
 
-        return one_hots, scores, caps_len
+        return one_hots, caps_len
 
 
     def compute_policy_gradient_batch(self, sample, tgt, scores, caps_len):
