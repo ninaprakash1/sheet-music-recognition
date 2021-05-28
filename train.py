@@ -51,7 +51,6 @@ def main(args):
     train_label = args["train_label"]
     val_label = args["val_label"]
     model_name = args["model_name"]
-    layers = args["layers"]
     beam_size = args["beam_size"]
     backbone = args["backbone"]
     decode_type = args["decode_type"]
@@ -130,10 +129,10 @@ def main(args):
     train_data = Dataset(train_dir, train_idx, train_corpus_idx)
     val_data = Dataset(val_dir, val_idx, val_corpus_idx)
 
-    split = [4, 3, len(train_data)-7]
+    # split = [4, 3, len(train_data)-7]
     # split = [len(data)-500, 500, 0]
     # split = [1, 6999]
-    train_data, val_data, rest = torch.utils.data.dataset.random_split(train_data, split)
+    # train_data, val_data, rest = torch.utils.data.dataset.random_split(train_data, split)
 
     train_loader = torch.utils.data.DataLoader(
         train_data, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
@@ -173,7 +172,7 @@ def main(args):
                 if decode_type == "RNN":
                     scores, caps_sorted, decode_lengths, alphas, sort_ind = decoder(imgs, caps, caplens, device)
                     targets = caps_sorted[:, 1:]
-                elif decode_type == "transformer":
+                elif decode_type == "Transformer":
                     scores = decoder(imgs, caps[:, 0:-1])
                     targets = caps[:, 1:]
 
@@ -372,10 +371,9 @@ if __name__ == '__main__':
     args = dict(label_type="word", emb_dim=200, decoder_dim=300, att_dim=300, dropout=0.2, start_epoch=0, epochs=100,
                 batch_size=16,
                 workers=0, encoder_lr=0.0001, decoder_lr=0.0001, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
-                print_freq=100, save_freq=100,
+                print_freq=100, save_freq=1,
                 backbone="squeezenet", # [resnet18, resnet34, squeezenet]
                 checkpoint=None, train_dir="full_data", val_dir="full_data",
-                train_label="mixed_strings.txt", val_label="mixed_strings.txt", model_name="resnet_transformer",
-                layers=18,
-                beam_size=10, decode_type="RNN")
+                train_label="mixed_strings.txt", val_label="mixed_strings.txt", model_name="squeenzenet_transformer",
+                beam_size=10, decode_type="Transformer")
     main(args)
