@@ -17,9 +17,10 @@ class ImageEncoder(nn.Module):
     Transformer Encoder
     """
     def __init__(self, backbone="squeezenet", wordvec_dim=200, num_heads=4,
-                 num_layers=2):
+                 num_layers=2, transformer_encode=True):
 
         super().__init__()
+        self.transformer_encode = transformer_encode
         if backbone == "squeezenet":
             self.backbone = SqueezeNet(emb_dim=wordvec_dim)
         elif backbone == "resnet18":
@@ -43,26 +44,17 @@ class ImageEncoder(nn.Module):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
         elif isinstance(module, nn.Conv2d):
-            if module.bias:
+            if module.bias != None:
                 module.bias.data.zero_()
             nn.init.xavier_uniform_(module.weight.data)
 
     def forward(self, features):
-        """
-        Given image features and caption tokens, return a distribution over the
-        possible tokens for each timestep. Note that since the entire sequence
-        of captions is provided all at once, we mask out future timesteps.
 
-        Inputs:
-         - features: image features, of shape (N, D, T') , where T' is the width of the image
-         - captions: ground truth captions, of shape (N, T)
-
-        Returns:
-         - scores: score for each token at each timestep, of shape (N, T, V)
-        """
         x = self.backbone(features)
-        x = self.positional_encoding(x)
-        x = self.transformer(x)
+
+        if self.transformer_encode:
+            x = self.positional_encoding(x)
+            x = self.transformer(x)
 
         return x
 
@@ -79,7 +71,7 @@ class CaptioningTransformer(nn.Module):
     works on sequences of length T, uses word vectors of dimension W, and
     operates on minibatches of size N.
     """
-    def __init__(self, word_to_idx, input_dim, wordvec_dim, num_heads=4,
+    def __init__(self, word2idx, input_dim, wordvec_dim, num_heads=4,
                  num_layers=2, max_length=50):
         """
         Construct a new CaptioningTransformer instance.
@@ -95,10 +87,10 @@ class CaptioningTransformer(nn.Module):
         """
         super().__init__()
 
-        vocab_size = len(word_to_idx)
-        self._null = word_to_idx["<pad>"]
-        self._start = word_to_idx.get("<start>", None)
-        self._end = word_to_idx.get("<end>", None)
+        self._null = word2idx["<pad>"]
+        self._start = word2idx.get("<start>", None)
+        self._end = word2idx.get("<end>", None)
+        vocab_size = len(word2idx)
         self.vocab_size = vocab_size
         self.max_length = max_length
 
@@ -217,30 +209,16 @@ class CaptioningTransformer(nn.Module):
 
 
         with torch.no_grad():
-            # initialze k the number of sequence we are decoding at each time step
             k = beam_size
-
-            # Create an empty captions tensor (where all tokens are NULL).
-            # captions = self._null * np.ones((N, max_length), dtype=np.int32)
 
             k_prev_words = torch.LongTensor([[self._start]] * k).to(device) # (k, 1)
 
-            # Tensor to store top k sequences
             seqs = k_prev_words  # (k, 1)
 
-            # Tensor to store top k sequences' scores
             top_k_scores = torch.zeros(k, 1).to(device)  # (k, 1)
 
-            # Lists to store completed sequences and scores
             complete_seqs = list()
             complete_seqs_scores = list()
-
-            # Create a partial caption, with only the start token.
-            # partial_caption = self._start * np.ones(N, dtype=np.int32)
-            # partial_caption = torch.Tensor(partial_caption)
-            # [N] -> [N, 1]
-            # partial_caption = partial_caption.unsqueeze(1)
-
 
             # start with the token after <start>
             for step in range(1, max_length+1):
@@ -250,17 +228,12 @@ class CaptioningTransformer(nn.Module):
                 output_logits = self.forward(features, seqs)
                 output_logits = output_logits[:, -1, :] # [k, V]
 
-                # Choose the most likely word ID from the vocabulary.
-                # [N, V] -> [N]
-                # word = torch.argmax(output_logits, dim=1)
-
                 scores = F.log_softmax(output_logits, dim=1)
                 scores = top_k_scores.expand_as(scores) + scores
 
                 if step == 1:
                     top_k_scores, top_k_words = scores[0].topk(k, 0, True, True)  # (s)
                 else:
-                    # Unroll and find top scores, and their unrolled indices
                     top_k_scores, top_k_words = scores.view(-1).topk(k, 0, True, True)  # (s)
 
                 prev_word_inds = top_k_words // self.vocab_size  # (s)
@@ -292,14 +265,96 @@ class CaptioningTransformer(nn.Module):
                 i = int(scores.argmax() // scores.shape[1])
                 seq = seqs[i].tolist()
 
-
-
-                # Update our overall caption and our current partial caption.
-                # captions[:, t] = word.numpy()
-                # word = word.unsqueeze(1)
-                # partial_caption = torch.cat([partial_caption, word], dim=1)
-
             return seq
+
+    def greedy_decode(self, features, device, max_length=35):
+        """
+        a differentiable implementation of greedy decoding
+
+        return:
+            one_hots: greedy decoding result for each time step
+            scores: conditional log
+        """
+
+        N = features.shape[0]
+        scores = torch.zeros((N, 1))
+
+
+        # Create an empty captions tensor (where all tokens are NULL).
+        captions = self._null * torch.ones((N, max_length), dtype=torch.long).to(device)
+
+        # Create a partial caption, with only the start token.
+        partial_caption = torch.LongTensor([[self._start]] * N).to(device)
+        captions[:, 0] = partial_caption.squeeze()
+        # [N] -> [N, 1]
+        incomplete_inds = list(range(N))
+        caps_len = list([0] * N)
+        one_hots = self._null * torch.ones((N, max_length-1, 734)).to(device)
+
+        for t in range(1, max_length):
+            # Predict the next token (ignoring all other time steps).
+            output_logits = self.forward(features, partial_caption)
+            output_logits = output_logits[:, -1, :]
+            log_probs = torch.log(output_logits)
+
+            # Choose the most likely word ID from the vocabulary.
+            # [N, V] -> [N]
+            # log_probs, word = torch.topk(log_probs, 1, dim=1)
+            one_hot = F.gumbel_softmax(output_logits, tau=1, hard=True)
+            one_hots[incomplete_inds, t-1, :] = one_hot[incomplete_inds, :]
+            _, word = torch.where(one_hot == 1)
+            # scores[incomplete_inds] += log_probs[incomplete_inds]
+
+            # Update our overall caption and our current partial caption.
+            # if len(complete_inds) != 0:
+            #     word[complete_inds] = torch.LongTensor([[self._end]] * len(complete_inds))
+            captions[incomplete_inds, t] = word[incomplete_inds]
+            complete = [ind for ind, next_word in enumerate(word.squeeze()) if
+                               next_word == self._end]
+
+            new_complete= list((set(incomplete_inds) - (set(incomplete_inds) - set(complete))))
+            incomplete_inds = list(set(incomplete_inds) - set(complete))
+
+            for idx in new_complete:
+                caps_len[idx] = t+1
+
+
+            partial_caption = captions[:, :t+1].clone()
+            partial_caption = partial_caption.reshape((N, -1))
+            if (len(incomplete_inds) == 0):
+                break
+        if(len(incomplete_inds) > 0):
+            for idx in incomplete_inds:
+                caps_len[idx] = max_length
+
+        return one_hots, scores, caps_len
+
+
+    def compute_policy_gradient_batch(self, sample, tgt, scores, caps_len):
+        with torch.no_grad():
+            reward, baseline = self.compute_baseline(sample, tgt, caps_len)
+        loss = (- (reward - baseline) * scores).mean()
+        return loss
+
+
+    def compute_baseline(self, gen, tgt, caps_len):
+        B, T = gen.shape
+        caps_len = torch.tensor(caps_len).reshape((B, -1))
+
+        indicator = gen.eq(tgt)
+        reward = indicator.sum(axis=1).float()
+        reward = reward - T + caps_len
+        baseline = reward.mean()
+
+
+        # indicator = (gen == tgt).all(dim=1).float()
+        #
+        # baseline = indicator.sum() / B
+        # baseline.requires_grad = False
+        # reward = indicator.reshape((-1, 1))
+        # reward.requires_grad = False
+
+        return reward, baseline
 
 
 class TransformerDecoderLayer(nn.Module):
@@ -531,9 +586,6 @@ class PositionalEncoding(nn.Module):
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        #sys.stdout.write(str(x.shape))
-        #sys.stdout.write(str(self.pe.shape))
-        #sys.stdout.flush()
         x = x + self.pe[:, :x.size(1), :]
 
         return self.dropout(x)

@@ -20,7 +20,7 @@ class Dataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         ID = self.list_IDs[index]
-        img_name = str(ID) + ".png"
+        img_name = "image" + str(ID) + ".png"
         img_path = os.path.join(self.data_dir, img_name)
         img = Image.open(img_path)
 
@@ -77,7 +77,6 @@ def read_captions(file):
     with open(file, "r") as fb:
         lines = fb.readlines()
     lines = [list(line.lstrip("tinyNotation: ").rstrip(" \n")) for line in lines]
-
     # naive implementation of char list. can do more sophisticated such as ## , --.
     chars = ["C", "D", "E", "F", "G", "A", "B", "c", "d", "e", "f", "g", "a", "b", "r"]
     nums = [str(num) for num in list(range(0, 9))]
@@ -168,10 +167,10 @@ def convert_corpus_idx(word2idx, corpus, max_len):
     return corpus_idx
 
 if __name__ == '__main__':
-    corpus, word2idx, max_len = read_captions_word("music_strings_small.txt")
+    corpus, word2idx, idx2word, max_len = read_captions_word("mixed_strings.txt")
     print(word2idx["<pad>"])
     corpus_idx = convert_corpus_idx(word2idx, corpus, max_len)
-    dataset = Dataset("data", list(range(0, len(corpus_idx))), corpus_idx)
+    dataset = Dataset("full_data", list(range(0, len(corpus_idx))), corpus_idx)
     print(dataset.__len__())
     X, y, cap_len = dataset.__getitem__(1)
     print(X.shape)

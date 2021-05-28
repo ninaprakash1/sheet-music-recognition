@@ -109,8 +109,8 @@ def main(args):
         decoder_optimizer.load_state_dict(checkpoint['decoder_optimizer_state_dict'])
         encoder.load_state_dict(checkpoint['encoder_state_dict'])
         encoder_optimizer.load_state_dict(checkpoint['encoder_optimizer_state_dict'])
-        encoder_lr_scheduler.load_state_dict(checkpoint["encoder_lr_scheduler_state_dict"])
-        decoder_lr_scheduler.load_state_dict(checkpoint["decoder_lr_scheduler_state_dict"])
+        # encoder_lr_scheduler.load_state_dict(checkpoint["encoder_lr_scheduler_state_dict"])
+        # decoder_lr_scheduler.load_state_dict(checkpoint["decoder_lr_scheduler_state_dict"])
         step = checkpoint["step"]
 
     optimizer_to(decoder_optimizer, device)
@@ -129,20 +129,25 @@ def main(args):
                                      std=[0.229, 0.224, 0.225])
 
     # TODO might want to split the data into train, val, test, or we can just generate more test data
-    data = Dataset(train_dir, list(range(0, 7500)), train_corpus_idx)
+    # data = Dataset(train_dir, list(range(0, 7500)), train_corpus_idx)
 
     # train_idx = list(set(range(20000)) - set(range(0, 7500, 15)))
     # val_idx = list(range(0, 7500, 15))
 
-    # train_idx = list(range(0, 20000))
-    # val_idx = list(range(0, 7500, 6))
 
-    # train_data = Dataset(train_dir, train_idx, train_corpus_idx)
-    # val_data = Dataset(val_dir, val_idx, val_corpus_idx)
-    split = [4, 3, len(data)-7]
+    val_idx = list(range(1, 20000, 20))
+    test_idx = list(range(0, 20000, 20))
+    train_idx = list(set(list(range(0, 22000))) - set(val_idx) - set(test_idx))
+
+    # train_idx = list(set(range(7500)) - set(range(0, 7500, 15)))
+    # val_idx = list(range(0, 7500, 15))
+    train_data = Dataset(train_dir, train_idx, train_corpus_idx)
+    val_data = Dataset(val_dir, val_idx, val_corpus_idx)
+
+    # split = [4, 3, len(data)-7]
     # split = [len(data)-500, 500, 0]
     # split = [1, 6999]
-    train_data, val_data, rest = torch.utils.data.dataset.random_split(data, split)
+    # train_data, val_data, rest = torch.utils.data.dataset.random_split(data, split)
 
     train_loader = torch.utils.data.DataLoader(
         train_data, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
@@ -187,17 +192,23 @@ def main(args):
 
                 # N, H, W, C = imgs.shape
                 # imgs = imgs.squeeze(1)
+
+                # captions, _, _ = decoder.decode(imgs, device, max_length=max_len+2)
+
+
                 scores = decoder(imgs, caps[:, 0:-1])
-                # no need to decode at <end>
+                # # no need to decode at <end>
                 decode_lengths = (caplens.squeeze(1) - 1).tolist()
                 targets = caps[:, 1:]
 
-                # more efficient computation
+
+                #
+                # # more efficient computation
                 scores = pack_padded_sequence(scores, decode_lengths, batch_first=True, enforce_sorted=False)
                 targets = pack_padded_sequence(targets, decode_lengths, batch_first=True, enforce_sorted=False)
 
+                #
                 loss = criterion(scores.data, targets.data)
-
                 # TODO add if statement
                 # doubly stochastic attention regularization
                 # # use attention + RNN
@@ -359,7 +370,7 @@ def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_r
 
         image = encoder(image.float())
         image = image.squeeze(1)
-        seq = decoder.sample(image, device, beam_size=10)
+        seq = decoder.sample(image, device, beam_size=1)
         if seq == caps.squeeze()[:caplens].tolist():
             counter += 1
 
@@ -497,10 +508,10 @@ if __name__ == '__main__':
     args = dict(label_type="word", emb_dim=200, decoder_dim=300, att_dim=300, dropout=0.2, start_epoch=0, epochs=100,
                 batch_size=16,
                 workers=0, encoder_lr=0.0001, decoder_lr=0.0001, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
-                print_freq=100, save_freq=1,
-                backbone="resnet34", # [resnet18, resnet34, squeezenet, rnn]
-                checkpoint=None, train_dir="different_measures", val_dir="different_measures",
-                train_label="different_measures_strings.txt", val_label="different_measures_strings.txt", model_name="resnet_transformer",
+                print_freq=100, save_freq=100,
+                backbone="squeezenet", # [resnet18, resnet34, squeezenet, rnn]
+                checkpoint=None, train_dir="full_data", val_dir="full_data",
+                train_label="mixed_strings.txt", val_label="mixed_strings.txt", model_name="resnet_transformer",
                 layers=18,
                 beam_size=10)
     main(args)

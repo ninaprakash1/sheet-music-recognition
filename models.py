@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 import torchvision
+from torch.nn import functional as F
 
 class SqueezeNet(nn.Module):
     def __init__(self, emb_dim=20):
@@ -90,12 +91,12 @@ class Attention(nn.Module):
         return attention_weighted_encoding, alpha
 
 
-class DecoderWithAttention(nn.Module):
+class RNN_Decoder(nn.Module):
     """
     Decoder.
     """
 
-    def __init__(self, attention_dim, embed_dim, decoder_dim, vocab_size, encoder_dim=512, dropout=0.5):
+    def __init__(self, attention_dim, embed_dim, decoder_dim, vocab_size, word2idx, encoder_dim=512, dropout=0.5):
         """
         :param attention_dim: size of attention network
         :param embed_dim: embedding size
@@ -104,7 +105,13 @@ class DecoderWithAttention(nn.Module):
         :param encoder_dim: feature size of encoded images
         :param dropout: dropout
         """
-        super(DecoderWithAttention, self).__init__()
+        super().__init__()
+
+        self._null = word2idx["<pad>"]
+        self._start = word2idx.get("<start>", None)
+        self._end = word2idx.get("<end>", None)
+        vocab_size = len(word2idx)
+        self.vocab_size = vocab_size
 
         self.encoder_dim = encoder_dim
         self.attention_dim = attention_dim
@@ -192,3 +199,85 @@ class DecoderWithAttention(nn.Module):
             alphas[:batch_size_t, t, :] = alpha
 
         return predictions, encoded_captions, decode_lengths, alphas, sort_ind
+
+    def sample(self, features, device, max_decode_length=50, beam_size=10):
+        k = beam_size
+
+        _, num_pixels, encoder_dim = features.shape
+
+        features = features.expand(k, num_pixels, encoder_dim)  # (k, num_pixels, encoder_dim)
+
+        k_prev_words = torch.LongTensor([[self._start]] * k).to(device)  # (k, 1)
+
+        seqs = k_prev_words  # (k, 1)
+
+        top_k_scores = torch.zeros(k, 1).to(device)  # (k, 1)
+
+        complete_seqs = list()
+        complete_seqs_scores = list()
+
+        step = 1
+        h, c = self.init_hidden_state(features)
+        # s is a number less than or equal to k, because sequences are removed from this process once they hit <end>
+        for i in range()
+
+            embeddings = self.embedding(k_prev_words).squeeze(1)  # (s, embed_dim)
+
+            awe, _ = self.attention(encoder_out, h)  # (s, encoder_dim), (s, num_pixels)
+
+            gate = self.sigmoid(self.f_beta(h))  # gating scalar, (s, encoder_dim)
+            awe = gate * awe
+
+            h, c = self.decode_step(torch.cat([embeddings, awe], dim=1), (h, c))  # (s, decoder_dim)
+
+            scores = self.fc(h)  # (s, vocab_size)
+            scores = F.log_softmax(scores, dim=1)
+
+            scores = top_k_scores.expand_as(scores) + scores  # (s, vocab_size)
+
+            if step == 1:
+                top_k_scores, top_k_words = scores[0].topk(k, 0, True, True)  # (s)
+            else:
+                # Unroll and find top scores, and their unrolled indices
+                top_k_scores, top_k_words = scores.view(-1).topk(k, 0, True, True)  # (s)
+
+            # Convert unrolled indices to actual indices of scores
+            prev_word_inds = top_k_words // len(word2idx)  # (s)
+            next_word_inds = top_k_words % len(word2idx)  # (s)
+
+            # Add new words to sequences
+            seqs = torch.cat([seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1)  # (s, step+1)
+
+            # Which sequences are incomplete (didn't reach <end>)?
+            incomplete_inds = [ind for ind, next_word in enumerate(next_word_inds) if
+                               next_word != word2idx['<end>']]
+            complete_inds = list(set(range(len(next_word_inds))) - set(incomplete_inds))
+
+            # Set aside complete sequences
+            if len(complete_inds) > 0:
+                complete_seqs.extend(seqs[complete_inds].tolist())
+                complete_seqs_scores.extend(top_k_scores[complete_inds])
+            k -= len(complete_inds)  # reduce beam length accordingly
+
+            # Proceed with incomplete sequences
+            if k == 0:
+                break
+            seqs = seqs[incomplete_inds]
+            h = h[prev_word_inds[incomplete_inds]]
+            c = c[prev_word_inds[incomplete_inds]]
+            encoder_out = encoder_out[prev_word_inds[incomplete_inds]]
+            top_k_scores = top_k_scores[incomplete_inds].unsqueeze(1)
+            k_prev_words = next_word_inds[incomplete_inds].unsqueeze(1)
+
+            if step > 50:
+                break
+            step += 1
+
+        if len(complete_seqs) > 0:
+            i = complete_seqs_scores.index(max(complete_seqs_scores))
+            seq = complete_seqs[i]
+        else:
+            i = int(scores.argmax() // scores.shape[1])
+            seq = seqs[i].tolist()
+        if seq == caps.squeeze()[:caplens].tolist():
+            counter += 1
