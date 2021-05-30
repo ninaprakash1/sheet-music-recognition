@@ -378,7 +378,7 @@ if __name__ == '__main__':
                 print_freq=100, save_freq=1,
                 backbone="squeezenet", # [resnet18, resnet34, squeezenet]
                 checkpoint=None, train_dir="different_measures", val_dir="different_measures",
-                train_label="different_measures_strings.txt", val_label="different_measures_strings.txt", model_name="squeenzenet_transformer",
+                train_label="different_measures_strings.txt", val_label="different_measures_strings.txt", model_name="spatial_encode",
                 beam_size=10, decode_type="Transformer", # [RNN, transformer]
                 spatial_encode=True, transformer_encode=False
                 )
