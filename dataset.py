@@ -20,7 +20,7 @@ class Dataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         ID = self.list_IDs[index]
-        img_name = "image" + str(ID) + ".png"
+        img_name = str(ID) + ".png"
         img_path = os.path.join(self.data_dir, img_name)
         img = Image.open(img_path)
 

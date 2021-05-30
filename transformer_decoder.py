@@ -17,10 +17,12 @@ class ImageEncoder(nn.Module):
     Transformer Encoder
     """
     def __init__(self, backbone="squeezenet", wordvec_dim=200, num_heads=4,
-                 num_layers=2, transformer_encode=True):
+                 num_layers=2, transformer_encode=True, RNN_decode=False, spatial_encode=True):
 
         super().__init__()
         self.transformer_encode = transformer_encode
+        self.RNN_decode = RNN_decode
+        self.spatial_encode = spatial_encode
         if backbone == "squeezenet":
             self.backbone = SqueezeNet(emb_dim=wordvec_dim)
         elif backbone == "resnet18":
@@ -32,7 +34,7 @@ class ImageEncoder(nn.Module):
         encoder_layer = TransformerEncoderLayer(input_dim=wordvec_dim, num_heads=num_heads)
         self.transformer = TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.apply(self._init_weights)
-        if transformer_encode == True:
+        if not RNN_decode:
             self.proj = nn.Linear(512, wordvec_dim)
 
 
@@ -51,11 +53,13 @@ class ImageEncoder(nn.Module):
             nn.init.xavier_uniform_(module.weight.data)
 
     def forward(self, features):
-
         x = self.backbone(features)
-        if self.transformer_encode:
-            x = self.proj(x)
+        if self.RNN_decode:
+            return x
+        x = self.proj(x)
+        if self.spatial_encode:
             x = self.positional_encoding(x)
+        if self.transformer_encode:
             x = self.transformer(x)
 
         return x
