@@ -78,7 +78,7 @@ def main(args):
     if decode_type == "RNN":
         decoder = RNN_Decoder(attention_dim=att_dim, embed_dim=emb_dim, decoder_dim=decoder_dim,
                               word2idx=word2idx, dropout=dropout)
-        encoder = ImageEncoder(backbone=backbone, wordvec_dim=emb_dim, transformer_encode=False)
+        encoder = ImageEncoder(backbone=backbone, wordvec_dim=emb_dim, transformer_decode=False)
     elif decode_type == "Transformer":
         decoder = CaptioningTransformer(word2idx=word2idx, wordvec_dim=emb_dim, input_dim=emb_dim, max_length=max_len+2, num_layers=4)
         encoder = ImageEncoder(backbone=backbone, wordvec_dim=emb_dim)
@@ -100,8 +100,8 @@ def main(args):
         decoder_optimizer.load_state_dict(checkpoint['decoder_optimizer_state_dict'])
         encoder.load_state_dict(checkpoint['encoder_state_dict'])
         encoder_optimizer.load_state_dict(checkpoint['encoder_optimizer_state_dict'])
-        encoder_lr_scheduler.load_state_dict(checkpoint["encoder_lr_scheduler_state_dict"])
-        decoder_lr_scheduler.load_state_dict(checkpoint["decoder_lr_scheduler_state_dict"])
+        # encoder_lr_scheduler.load_state_dict(checkpoint["encoder_lr_scheduler_state_dict"])
+        # decoder_lr_scheduler.load_state_dict(checkpoint["decoder_lr_scheduler_state_dict"])
         step = checkpoint["step"]
 
     optimizer_to(decoder_optimizer, device)
@@ -120,12 +120,13 @@ def main(args):
                                      std=[0.229, 0.224, 0.225])
 
 
-    val_idx = list(range(1, 20000, 20))
-    test_idx = list(range(0, 20000, 20))
-    train_idx = list(set(list(range(0, 22000))) - set(val_idx) - set(test_idx))
+    # val_idx = list(range(1, 20000, 20))
+    # test_idx = list(range(0, 20000, 20))
+    # train_idx = list(set(list(range(0, 22000))) - set(val_idx) - set(test_idx))
 
     # train_idx = list(set(range(7500)) - set(range(0, 7500, 15)))
-    # val_idx = list(range(0, 7500, 15))
+    train_idx = list(range(0, 7500, 15))
+    val_idx = list(range(0, 7500, 15))
     train_data = Dataset(train_dir, train_idx, train_corpus_idx)
     val_data = Dataset(val_dir, val_idx, val_corpus_idx)
 
@@ -138,7 +139,7 @@ def main(args):
         train_data, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
 
     val_loader = torch.utils.data.DataLoader(
-        val_data, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True)
+        val_data, batch_size=16, shuffle=False, num_workers=workers, pin_memory=True)
 
     # loader used for beam search for validation
     beam_loader = torch.utils.data.DataLoader(
@@ -173,17 +174,23 @@ def main(args):
                     scores, caps_sorted, decode_lengths, alphas, sort_ind = decoder(imgs, caps, caplens, device)
                     targets = caps_sorted[:, 1:]
                 elif decode_type == "Transformer":
-                    scores = decoder(imgs, caps[:, 0:-1])
+                    # scores = decoder(imgs, caps[:, 0:-1])
+
                     targets = caps[:, 1:]
 
+                    seqs, scores = decoder.reinforce(imgs, device, beam_size=5)
+
+                    loss = decoder.compute_policy_gradient_batch(seqs[:, 1:], targets, scores, caplens-1)
+                    print(loss)
                 # no need to decode at <end>
-                decode_lengths = (caplens.squeeze(1) - 1).tolist()
+                # decode_lengths = (caplens.squeeze(1) - 1).tolist()
 
                 # more efficient computation
-                scores = pack_padded_sequence(scores, decode_lengths, batch_first=True, enforce_sorted=False)
-                targets = pack_padded_sequence(targets, decode_lengths, batch_first=True, enforce_sorted=False)
+                # scores = pack_padded_sequence(scores, decode_lengths, batch_first=True, enforce_sorted=False)
+                # targets = pack_padded_sequence(targets, decode_lengths, batch_first=True, enforce_sorted=False)
 
-                loss = criterion(scores.data, targets.data)
+                # loss = criterion(scores.data, targets.data)
+
 
                 if decode_type == "RNN":
                     loss += att_reg * ((1. - alphas.sum(dim=1)) ** 2).mean()
@@ -192,19 +199,20 @@ def main(args):
                 encoder_optimizer.zero_grad()
                 loss.backward()
 
+
                 clip_gradient(decoder_optimizer, grad_clip)
                 clip_gradient(encoder_optimizer, grad_clip)
 
                 decoder_optimizer.step()
                 encoder_optimizer.step()
 
-                top5 = accuracy(scores.data, targets.data, 5)
-                losses.update(loss.item(), sum(decode_lengths))
-                top5accs.update(top5, sum(decode_lengths))
-                batch_time.update(time.time() - start)
-                top1 = accuracy(scores.data, targets.data, 1)
-                EM.update(top1, sum(decode_lengths))
-
+                    # # top5 = accuracy(scores.data, targets.data, 5)
+                    # # losses.update(loss.item(), sum(decode_lengths))
+                    # # top5accs.update(top5, sum(decode_lengths))
+                    # # batch_time.update(time.time() - start)
+                    # # top1 = accuracy(scores.data, targets.data, 1)
+                    # # EM.update(top1, sum(decode_lengths))
+                    #
                 start = time.time()
 
                 progress_bar.update(batch_size)
@@ -332,7 +340,7 @@ def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_r
 
         image = encoder(image.float())
         image = image.squeeze(1)
-        seq = decoder.sample(image, device, beam_size=10)
+        seq = decoder.sample(image, device, beam_size=5)
         if seq == caps.squeeze()[:caplens].tolist():
             counter += 1
 
@@ -368,12 +376,12 @@ def optimizer_to(optim, device):
                         subparam._grad.data = subparam._grad.data.to(device)
 
 if __name__ == '__main__':
-    args = dict(label_type="word", emb_dim=200, decoder_dim=300, att_dim=300, dropout=0.2, start_epoch=0, epochs=100,
-                batch_size=16,
-                workers=0, encoder_lr=0.0001, decoder_lr=0.0001, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
-                print_freq=100, save_freq=1,
+    args = dict(label_type="word", emb_dim=200, decoder_dim=300, att_dim=300, dropout=0.2, start_epoch=0, epochs=200,
+                batch_size=1,
+                workers=0, encoder_lr=0.01, decoder_lr=0.01, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
+                print_freq=100, save_freq=5,
                 backbone="squeezenet", # [resnet18, resnet34, squeezenet]
-                checkpoint=None, train_dir="full_data", val_dir="full_data",
-                train_label="mixed_strings.txt", val_label="mixed_strings.txt", model_name="squeenzenet_transformer",
+                checkpoint="model/SqueezeNet_NMT_7000/epoch_80.pt", train_dir="different_measures", val_dir="different_measures",
+                train_label="different_measures_strings.txt", val_label="different_measures_strings.txt", model_name="resnet18_transformer",
                 beam_size=10, decode_type="Transformer")
     main(args)

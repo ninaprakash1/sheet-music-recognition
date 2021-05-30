@@ -32,8 +32,8 @@ class ImageEncoder(nn.Module):
         encoder_layer = TransformerEncoderLayer(input_dim=wordvec_dim, num_heads=num_heads)
         self.transformer = TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.apply(self._init_weights)
-        if transformer_encode == True:
-            self.proj = nn.Linear(512, wordvec_dim)
+        # if transformer_encode == True:
+            # self.proj = nn.Linear(512, wordvec_dim)
 
 
     def _init_weights(self, module):
@@ -54,7 +54,7 @@ class ImageEncoder(nn.Module):
 
         x = self.backbone(features)
         if self.transformer_encode:
-            x = self.proj(x)
+            # x = self.proj(x)
             x = self.positional_encoding(x)
             x = self.transformer(x)
 
@@ -169,6 +169,91 @@ class CaptioningTransformer(nn.Module):
 
         return scores
 
+    def reinforce(self, features, device, max_decode_length=34, beam_size=5):
+        """
+        Given image features, use greedy decoding to predict the image caption.
+
+        Inputs:
+         - features: image features, of shape (1, D, T')
+         - max_length: maximum possible caption length
+
+        Returns:
+         - captions: captions for each example, of shape (N, max_length)
+        """
+
+
+        # with torch.no_grad():
+        k = beam_size
+
+        k_prev_words = torch.LongTensor([[self._start]] * k).to(device) # (k, 1)
+
+        seqs = k_prev_words  # (k, 1)
+
+        top_k_scores = torch.zeros(k, 1).to(device)  # (k, 1)
+
+        complete_seqs = list()
+        scores_tensor = torch.zeros(beam_size).to(device)
+        #complete_seqs_scores = list()
+
+        # start with the token after <start>
+        for step in range(1, max_decode_length+1):
+
+            # features = features.repeat(k, 1, 1)
+            # Predict the next token (ignoring all other time steps).
+            output_logits = self.forward(features, seqs)
+            output_logits = output_logits[:, -1, :] # [k, V]
+
+            scores = F.log_softmax(output_logits, dim=1)
+            scores = top_k_scores.expand_as(scores) + scores
+
+            if step == 1:
+                _, top_k_words = scores[0].topk(k, 0, True, True)  # (s)
+            else:
+                _, top_k_words = scores.view(-1).topk(k, 0, True, True)  # (s)
+
+            top_k_scores = scores.view(-1)[top_k_words]
+            prev_word_inds = top_k_words // self.vocab_size  # (s)
+            next_word_inds = top_k_words % self.vocab_size  # (s)
+
+            seqs = torch.cat([seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1)
+
+            incomplete_inds = [ind for ind, next_word in enumerate(next_word_inds) if
+                               next_word != self._end]
+            complete_inds = list(set(range(len(next_word_inds))) - set(incomplete_inds))
+
+            if len(complete_inds) > 0:
+                complete_seqs.extend(seqs[complete_inds])
+                scores_tensor[beam_size-k:beam_size-k+len(complete_inds)] = top_k_scores[complete_inds]
+                # complete_seqs_scores.extend(top_k_scores[complete_inds])
+            k -= len(complete_inds)
+
+            if k == 0:
+                break
+
+            seqs = seqs[incomplete_inds]
+
+            top_k_scores = top_k_scores[incomplete_inds].unsqueeze(1)
+            # k_prev_words = next_word_inds[incomplete_inds].unsqueeze(1)
+
+
+        if len(complete_seqs) == beam_size:
+            complete_seqs = torch.nn.utils.rnn.pad_sequence(complete_seqs, batch_first=True, padding_value=self._null)
+
+            complete_seqs = torch.cat([complete_seqs, self._null * torch.ones(beam_size, 35-complete_seqs.shape[1])], dim=1)
+            # complete_seqs_scores = torch.Tensor(complete_seqs_scores)
+            # complete_seqs_scores.requires_grad = True
+            return complete_seqs, scores_tensor
+        else:
+            complete_seqs.extend(seqs)
+            scores_tensor[beam_size-k:] = top_k_scores.squeeze(1)
+            # complete_seqs_scores.extend(top_k_scores)
+            complete_seqs = torch.nn.utils.rnn.pad_sequence(complete_seqs, batch_first=True, padding_value=self._null)
+
+        # complete_seqs_scores = torch.Tensor(complete_seqs_scores)
+        # complete_seqs_scores.requires_grad = True
+
+        return complete_seqs, scores_tensor
+
     def sample(self, features, device, max_decode_length=40, beam_size=10):
         """
         Given image features, use greedy decoding to predict the image caption.
@@ -182,64 +267,64 @@ class CaptioningTransformer(nn.Module):
         """
 
 
-        with torch.no_grad():
-            k = beam_size
+        # with torch.no_grad():
+        k = beam_size
 
-            k_prev_words = torch.LongTensor([[self._start]] * k).to(device) # (k, 1)
+        k_prev_words = torch.LongTensor([[self._start]] * k).to(device) # (k, 1)
 
-            seqs = k_prev_words  # (k, 1)
+        seqs = k_prev_words  # (k, 1)
 
-            top_k_scores = torch.zeros(k, 1).to(device)  # (k, 1)
+        top_k_scores = torch.zeros(k, 1).to(device)  # (k, 1)
 
-            complete_seqs = list()
-            complete_seqs_scores = list()
+        complete_seqs = list()
+        complete_seqs_scores = list()
 
-            # start with the token after <start>
-            for step in range(1, max_decode_length+1):
+        # start with the token after <start>
+        for step in range(1, max_decode_length+1):
 
-                # features = features.repeat(k, 1, 1)
-                # Predict the next token (ignoring all other time steps).
-                output_logits = self.forward(features, seqs)
-                output_logits = output_logits[:, -1, :] # [k, V]
+            # features = features.repeat(k, 1, 1)
+            # Predict the next token (ignoring all other time steps).
+            output_logits = self.forward(features, seqs)
+            output_logits = output_logits[:, -1, :] # [k, V]
 
-                scores = F.log_softmax(output_logits, dim=1)
-                scores = top_k_scores.expand_as(scores) + scores
+            scores = F.log_softmax(output_logits, dim=1)
+            scores = top_k_scores.expand_as(scores) + scores
 
-                if step == 1:
-                    top_k_scores, top_k_words = scores[0].topk(k, 0, True, True)  # (s)
-                else:
-                    top_k_scores, top_k_words = scores.view(-1).topk(k, 0, True, True)  # (s)
-
-                prev_word_inds = top_k_words // self.vocab_size  # (s)
-                next_word_inds = top_k_words % self.vocab_size  # (s)
-
-                seqs = torch.cat([seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1)
-
-                incomplete_inds = [ind for ind, next_word in enumerate(next_word_inds) if
-                                   next_word != self._end]
-                complete_inds = list(set(range(len(next_word_inds))) - set(incomplete_inds))
-
-                if len(complete_inds) > 0:
-                    complete_seqs.extend(seqs[complete_inds].tolist())
-                    complete_seqs_scores.extend(top_k_scores[complete_inds])
-                k -= len(complete_inds)
-
-                if k == 0:
-                    break
-
-                seqs = seqs[incomplete_inds]
-
-                top_k_scores = top_k_scores[incomplete_inds].unsqueeze(1)
-                # k_prev_words = next_word_inds[incomplete_inds].unsqueeze(1)
-
-            if len(complete_seqs) > 0:
-                i = complete_seqs_scores.index(max(complete_seqs_scores))
-                seq = complete_seqs[i]
+            if step == 1:
+                top_k_scores, top_k_words = scores[0].topk(k, 0, True, True)  # (s)
             else:
-                i = int(scores.argmax() // scores.shape[1])
-                seq = seqs[i].tolist()
+                top_k_scores, top_k_words = scores.view(-1).topk(k, 0, True, True)  # (s)
 
-            return seq
+            prev_word_inds = top_k_words // self.vocab_size  # (s)
+            next_word_inds = top_k_words % self.vocab_size  # (s)
+
+            seqs = torch.cat([seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1)
+
+            incomplete_inds = [ind for ind, next_word in enumerate(next_word_inds) if
+                               next_word != self._end]
+            complete_inds = list(set(range(len(next_word_inds))) - set(incomplete_inds))
+
+            if len(complete_inds) > 0:
+                complete_seqs.extend(seqs[complete_inds].tolist())
+                complete_seqs_scores.extend(top_k_scores[complete_inds])
+            k -= len(complete_inds)
+
+            if k == 0:
+                break
+
+            seqs = seqs[incomplete_inds]
+
+            top_k_scores = top_k_scores[incomplete_inds].unsqueeze(1)
+            # k_prev_words = next_word_inds[incomplete_inds].unsqueeze(1)
+
+        if len(complete_seqs) > 0:
+            i = complete_seqs_scores.index(max(complete_seqs_scores))
+            seq = complete_seqs[i]
+        else:
+            i = int(scores.argmax() // scores.shape[1])
+            seq = seqs[i].tolist()
+
+        return seq
 
     def greedy_decode(self, features, device, max_length=35):
         """
@@ -307,19 +392,20 @@ class CaptioningTransformer(nn.Module):
 
 
     def compute_policy_gradient_batch(self, sample, tgt, scores, caps_len):
-        with torch.no_grad():
-            reward, baseline = self.compute_baseline(sample, tgt, caps_len)
-        loss = (- (reward - baseline) * scores).mean()
+        reward, baseline = self.compute_baseline(sample, tgt, caps_len)
+        loss = (- (reward.detach() - baseline.detach()) * scores).mean()
         return loss
 
 
     def compute_baseline(self, gen, tgt, caps_len):
         B, T = gen.shape
-        caps_len = torch.tensor(caps_len).reshape((B, -1))
 
         indicator = gen.eq(tgt)
-        reward = indicator.sum(axis=1).float()
-        reward = reward - T + caps_len
+        reward = indicator.float()
+        reward = reward[:, :caps_len]
+        reward = reward.sum(dim=1, keepdim=True)
+        reward /= caps_len
+
         baseline = reward.mean()
 
 

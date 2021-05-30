@@ -9,13 +9,13 @@ class SqueezeNet(nn.Module):
 
         model_ft = torchvision.models.squeezenet1_0(pretrained=False)
         self.model = nn.Sequential(*list(model_ft.children())[:-1])
-
+        self.proj = nn.Linear(512, emb_dim)
     def forward(self, x):
         # N, 3, H, W -> N, 3, H/16 -1, W/16 -1
         out = self.model(x)
         out = out.permute(0, 2, 3, 1)  # (batch_size, encoded_image_size, encoded_image_size, 512)
         out = out.reshape((-1, 7*49, 512))
-        return out
+        return self.proj(out)
 
 
 class ResNet(nn.Module):
