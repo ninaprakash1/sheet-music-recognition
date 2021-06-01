@@ -78,7 +78,7 @@ class CaptioningTransformer(nn.Module):
     operates on minibatches of size N.
     """
     def __init__(self, word2idx, input_dim, wordvec_dim, num_heads=4,
-                 num_layers=2, max_length=50):
+                 num_layers=2, max_length=50, ensemble=False):
         """
         Construct a new CaptioningTransformer instance.
 
@@ -101,7 +101,8 @@ class CaptioningTransformer(nn.Module):
         self.max_length = max_length
 
         self.num_heads = num_heads
-        # TODO change the encoded image size
+        self.num_layers = num_layers
+
         self.visual_projection = nn.Linear(input_dim, wordvec_dim)
         self.embedding = nn.Embedding(vocab_size, wordvec_dim, padding_idx=self._null)
         self.positional_encoding = PositionalEncoding(wordvec_dim)
@@ -110,7 +111,11 @@ class CaptioningTransformer(nn.Module):
         self.transformer = TransformerDecoder(decoder_layer, num_layers=num_layers)
         self.apply(self._init_weights)
 
-        self.output = nn.Linear(wordvec_dim, vocab_size)
+        self.ensemble = ensemble
+        if self.ensemble:
+            self.output = nn.ModuleList([nn.Linear(wordvec_dim, vocab_size) for i in range(num_layers)])
+        else:
+            self.output = nn.Linear(wordvec_dim, vocab_size)
 
     def _init_weights(self, module):
         """
@@ -167,9 +172,16 @@ class CaptioningTransformer(nn.Module):
                                     memory=projected_features,
                                     tgt_mask=tgt_mask)
 
-        # Project to scores per token.
-        # shape: [N, T, W] -> [N, T, V], V vocab size
-        scores = self.output(features)
+        if self.ensemble:
+            # taking the average of the scores before softmax. adding superversion to each layer
+            scores = 0
+            for i in range(self.num_layers):
+                scores = scores + self.output[i](features[i])
+            scores = scores / self.num_layers
+        else:
+            # Project to scores per token.
+            # shape: [N, T, W] -> [N, T, V], V vocab size
+            scores = self.output(features[-1])
 
         return scores
 
@@ -478,11 +490,12 @@ class TransformerDecoder(nn.Module):
 
     def forward(self, tgt, memory, tgt_mask=None):
         output = tgt
-
+        output_seq = []
         for mod in self.layers:
             output = mod(output, memory, tgt_mask=tgt_mask)
+            output_seq.append(output)
 
-        return output
+        return output_seq
 
 class TransformerEncoder(nn.Module):
     def __init__(self, encoder_layer, num_layers):

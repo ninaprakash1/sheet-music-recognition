@@ -57,6 +57,8 @@ def main(args):
     decode_type = args["decode_type"]
     spatial_encode = args["spatial_encode"]
     transformer_encode = args["transformer_encode"]
+    image_transform = args["image_transform"]
+    ensemble = args["ensemble"]
 
     # make checkpoint path
     path = create_checkpoint_dir(model_name)
@@ -84,7 +86,8 @@ def main(args):
         encoder = ImageEncoder(backbone=backbone, wordvec_dim=emb_dim, transformer_encode=False, RNN_decode=True,
                                spatial_encode=False)
     elif decode_type == "Transformer":
-        decoder = CaptioningTransformer(word2idx=word2idx, wordvec_dim=emb_dim, input_dim=emb_dim, max_length=max_len+2, num_layers=4)
+        decoder = CaptioningTransformer(word2idx=word2idx, wordvec_dim=emb_dim, input_dim=emb_dim, max_length=max_len+2,
+                                        num_layers=4, ensemble=ensemble)
         encoder = ImageEncoder(backbone=backbone, wordvec_dim=emb_dim, num_layers=2, transformer_encode=transformer_encode,
                                spatial_encode=spatial_encode, RNN_decode=False)
 
@@ -127,13 +130,14 @@ def main(args):
 
     train_idx = list(set(range(7500)) - set(range(0, 7500, 15)))
     val_idx = list(range(0, 7500, 15))
-    train_data = Dataset(train_dir, train_idx, train_corpus_idx, transform=False)
+    train_data = Dataset(train_dir, train_idx, train_corpus_idx, transform=image_transform)
     val_data = Dataset(val_dir, val_idx, val_corpus_idx)
 
     # split = [500, 3, len(train_data)-503]
     # split = [len(data)-500, 500, 0]
     # split = [1, 6999]
-    # train_data, _, rest = torch.utils.data.dataset.random_split(train_data, split)
+    # split = [4, 3, len(train_data)-7]
+    # train_data, val_data, rest = torch.utils.data.dataset.random_split(train_data, split)
 
     train_loader = torch.utils.data.DataLoader(
         train_data, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
@@ -373,10 +377,10 @@ if __name__ == '__main__':
                 batch_size=16,
                 workers=0, encoder_lr=0.0001, decoder_lr=0.0001, decay_rate=0.98, grad_clip=5.0, att_reg=1.0,
                 print_freq=100, save_freq=1,
-                backbone="squeezenet", # [resnet18, resnet34, squeezenet]
+                backbone="resnet34", # [resnet18, resnet34, squeezenet]
                 checkpoint=None, train_dir="different_measures", val_dir="different_measures",
-                train_label="different_measures_strings.txt", val_label="different_measures_strings.txt", model_name="image_transform",
+                train_label="different_measures_strings.txt", val_label="different_measures_strings.txt", model_name="multi_supervision",
                 beam_size=10, decode_type="Transformer", # [RNN, transformer]
-                spatial_encode=True, transformer_encode=True
+                spatial_encode=True, transformer_encode=True, image_transform=False, ensemble=True
                 )
     main(args)
