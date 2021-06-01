@@ -85,7 +85,7 @@ def main(args):
                                spatial_encode=False)
     elif decode_type == "Transformer":
         decoder = CaptioningTransformer(word2idx=word2idx, wordvec_dim=emb_dim, input_dim=emb_dim, max_length=max_len+2, num_layers=4)
-        encoder = ImageEncoder(backbone=backbone, wordvec_dim=emb_dim, num_layers=4, transformer_encode=transformer_encode,
+        encoder = ImageEncoder(backbone=backbone, wordvec_dim=emb_dim, num_layers=2, transformer_encode=transformer_encode,
                                spatial_encode=spatial_encode, RNN_decode=False)
 
     decoder_optimizer = torch.optim.Adam(params=decoder.parameters(), lr=decoder_lr)
@@ -120,10 +120,6 @@ def main(args):
     # Loss function
     criterion = nn.CrossEntropyLoss().to(device)
 
-    # Custom dataloaders
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-
 
     # val_idx = list(range(1, 20000, 20))
     # test_idx = list(range(0, 20000, 20))
@@ -131,7 +127,7 @@ def main(args):
 
     train_idx = list(set(range(7500)) - set(range(0, 7500, 15)))
     val_idx = list(range(0, 7500, 15))
-    train_data = Dataset(train_dir, train_idx, train_corpus_idx)
+    train_data = Dataset(train_dir, train_idx, train_corpus_idx, transform=False)
     val_data = Dataset(val_dir, val_idx, val_corpus_idx)
 
     # split = [500, 3, len(train_data)-503]
@@ -375,11 +371,11 @@ def optimizer_to(optim, device):
 if __name__ == '__main__':
     args = dict(label_type="word", emb_dim=200, decoder_dim=300, att_dim=300, dropout=0.2, start_epoch=0, epochs=200,
                 batch_size=16,
-                workers=2, encoder_lr=0.0001, decoder_lr=0.0001, decay_rate=0.98, grad_clip=5.0, att_reg=1.0,
+                workers=0, encoder_lr=0.0001, decoder_lr=0.0001, decay_rate=0.98, grad_clip=5.0, att_reg=1.0,
                 print_freq=100, save_freq=1,
                 backbone="squeezenet", # [resnet18, resnet34, squeezenet]
                 checkpoint=None, train_dir="different_measures", val_dir="different_measures",
-                train_label="different_measures_strings.txt", val_label="different_measures_strings.txt", model_name="deep_encoder",
+                train_label="different_measures_strings.txt", val_label="different_measures_strings.txt", model_name="image_transform",
                 beam_size=10, decode_type="Transformer", # [RNN, transformer]
                 spatial_encode=True, transformer_encode=True
                 )

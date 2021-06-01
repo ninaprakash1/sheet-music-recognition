@@ -8,11 +8,15 @@ import itertools
 
 class Dataset(torch.utils.data.Dataset):
 
-    def __init__(self, data_dir, list_IDs, labels):
+    def __init__(self, data_dir, list_IDs, labels, transform=False):
         'Initialization'
         self.labels = labels
         self.list_IDs = list_IDs
         self.data_dir = data_dir
+        self.transform = None
+        if transform:
+            self.transform = transforms.RandomApply(torch.nn.ModuleList([transforms.GaussianBlur((55, 55)),
+                                                                         transforms.RandomAffine(5)]), p=0.5)
 
     def __len__(self):
         'Denotes the total number of samples'
@@ -26,9 +30,9 @@ class Dataset(torch.utils.data.Dataset):
 
         resizer = transforms.Resize((128, 800))
         img = resizer(img)
-        # TODO write a function to call get max width
 
-        # img = preprocess_img_line(img_path, 256, 5024)
+        if self.transform:
+            img = self.transform(img)
 
         # repeat the grey scale image along the channel dimension
         X = torch.tensor(np.repeat(np.array(img)[:, :, 3][np.newaxis, :, :], 3, 0))
