@@ -47,9 +47,10 @@ class ResNet(nn.Module):
         :param images: images, a tensor of dimensions (batch_size, 3, image_size, image_size)
         :return: encoded images
         """
+        N, _, _, _= images.shape
         out = self.resnet(images)  # (batch_size, 512, image_size/32, image_size/32)
         out = out.permute(0, 2, 3, 1)  # (batch_size, encoded_image_size, encoded_image_size, 512)
-        out = out.reshape((-1, 25*4, 512))
+        out = out.reshape((N, 25*4, 512))
         return out
 
 

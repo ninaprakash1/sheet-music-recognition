@@ -1,4 +1,4 @@
-from tensorboardX import SummaryWriter
+
 import time
 import torch.optim
 import torch.utils.data
@@ -10,7 +10,8 @@ from utils import *
 from dataset import *
 from eval import idx2string, pitch_match, beat_match
 from transformer_decoder import CaptioningTransformer, ImageEncoder
-from CNN_simple import ConvNet
+from tensorboardX import SummaryWriter
+
 
 # import argparse
 # import sys
@@ -84,7 +85,7 @@ def main(args):
                                spatial_encode=False)
     elif decode_type == "Transformer":
         decoder = CaptioningTransformer(word2idx=word2idx, wordvec_dim=emb_dim, input_dim=emb_dim, max_length=max_len+2, num_layers=4)
-        encoder = ImageEncoder(backbone=backbone, wordvec_dim=emb_dim, transformer_encode=transformer_encode,
+        encoder = ImageEncoder(backbone=backbone, wordvec_dim=emb_dim, num_layers=4, transformer_encode=transformer_encode,
                                spatial_encode=spatial_encode, RNN_decode=False)
 
     decoder_optimizer = torch.optim.Adam(params=decoder.parameters(), lr=decoder_lr)
@@ -133,10 +134,10 @@ def main(args):
     train_data = Dataset(train_dir, train_idx, train_corpus_idx)
     val_data = Dataset(val_dir, val_idx, val_corpus_idx)
 
-    # split = [4, 3, len(train_data)-7]
+    # split = [500, 3, len(train_data)-503]
     # split = [len(data)-500, 500, 0]
     # split = [1, 6999]
-    # train_data, val_data, rest = torch.utils.data.dataset.random_split(train_data, split)
+    # train_data, _, rest = torch.utils.data.dataset.random_split(train_data, split)
 
     train_loader = torch.utils.data.DataLoader(
         train_data, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
@@ -229,36 +230,36 @@ def main(args):
                 # log to Tensorboard
                 log_train(writer, losses.val, top5accs.val, EM.val, encoder_optimizer.param_groups[0]["lr"],
                           decoder_optimizer.param_groups[0]["lr"], step)
+        if epoch % 2 == 0:
+            val_loss, val_top5, val_top, em, pitch, beat = validate(val_loader, beam_loader, encoder, decoder, criterion,
+                                                   device, att_reg, epoch, decode_type, beam_size=beam_size, idx2word=idx2word)
 
-        val_loss, val_top5, val_top, em, pitch, beat = validate(val_loader, beam_loader, encoder, decoder, criterion,
-                                               device, att_reg, epoch, decode_type, beam_size=beam_size, idx2word=idx2word)
+            log_val(writer, val_loss, val_top5, val_top, em, pitch, beat, step)
 
-        log_val(writer, val_loss, val_top5, val_top, em, pitch, beat, step)
+            print('\nValidation\t'
+                  'Loss {loss:.4f}\t'
+                  'top5 {top5:.3f}\t'
+                  'EM {top:.3f}\t'
+                  'true EM {em:.3f}\t'
+                  'pitch {pitch: .3f}\t'
+                  'beat {beat: .3f}'.format(
+                loss=val_loss, top5=val_top5, top=val_top, em=em, pitch=pitch, beat=beat))
 
-        print('\nValidation\t'
-              'Loss {loss:.4f}\t'
-              'top5 {top5:.3f}\t'
-              'EM {top:.3f}\t'
-              'true EM {em:.3f}\t'
-              'pitch {pitch: .3f}\t'
-              'beat {beat: .3f}'.format(
-            loss=val_loss, top5=val_top5, top=val_top, em=em, pitch=pitch, beat=beat))
-
-        if epoch % save_freq == 0:
-            checkpoint_path = os.path.join(path, f'epoch_{epoch}.pt')
-            checkpoint_dict = {
-                'epoch': epoch,
-                'encoder_state_dict': encoder.state_dict(),
-                'decoder_state_dict': decoder.state_dict(),
-                'encoder_optimizer_state_dict': encoder_optimizer.state_dict(),
-                'decoder_optimizer_state_dict': decoder_optimizer.state_dict(),
-                'decoder_lr_scheduler_state_dict': decoder_lr_scheduler.state_dict(),
-                'encoder_lr_scheduler_state_dict': encoder_lr_scheduler.state_dict(),
-                'loss': losses.val,
-                'step': step
-            }
-            checkpoint_saver.save(checkpoint_dict, checkpoint_path, em)
-            print(f'Saved checkpoint: {checkpoint_path}')
+            if epoch % save_freq == 0:
+                checkpoint_path = os.path.join(path, f'epoch_{epoch}.pt')
+                checkpoint_dict = {
+                    'epoch': epoch,
+                    'encoder_state_dict': encoder.state_dict(),
+                    'decoder_state_dict': decoder.state_dict(),
+                    'encoder_optimizer_state_dict': encoder_optimizer.state_dict(),
+                    'decoder_optimizer_state_dict': decoder_optimizer.state_dict(),
+                    'decoder_lr_scheduler_state_dict': decoder_lr_scheduler.state_dict(),
+                    'encoder_lr_scheduler_state_dict': encoder_lr_scheduler.state_dict(),
+                    'loss': losses.val,
+                    'step': step
+                }
+                checkpoint_saver.save(checkpoint_dict, checkpoint_path, em)
+                print(f'Saved checkpoint: {checkpoint_path}')
 
         encoder_lr_scheduler.step()
         decoder_lr_scheduler.step()
@@ -374,12 +375,12 @@ def optimizer_to(optim, device):
 if __name__ == '__main__':
     args = dict(label_type="word", emb_dim=200, decoder_dim=300, att_dim=300, dropout=0.2, start_epoch=0, epochs=200,
                 batch_size=16,
-                workers=0, encoder_lr=0.0001, decoder_lr=0.0001, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
+                workers=2, encoder_lr=0.0001, decoder_lr=0.0001, decay_rate=0.98, grad_clip=5.0, att_reg=1.0,
                 print_freq=100, save_freq=1,
                 backbone="squeezenet", # [resnet18, resnet34, squeezenet]
                 checkpoint=None, train_dir="different_measures", val_dir="different_measures",
-                train_label="different_measures_strings.txt", val_label="different_measures_strings.txt", model_name="spatial_encode",
+                train_label="different_measures_strings.txt", val_label="different_measures_strings.txt", model_name="deep_encoder",
                 beam_size=10, decode_type="Transformer", # [RNN, transformer]
-                spatial_encode=True, transformer_encode=False
+                spatial_encode=True, transformer_encode=True
                 )
     main(args)
