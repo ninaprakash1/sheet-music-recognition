@@ -375,7 +375,7 @@ def optimizer_to(optim, device):
 if __name__ == '__main__':
     args = dict(label_type="word", emb_dim=200, decoder_dim=300, att_dim=300, dropout=0.2, start_epoch=0, epochs=200,
                 batch_size=16,
-                workers=0, encoder_lr=0.0001, decoder_lr=0.0001, decay_rate=0.98, grad_clip=5.0, att_reg=1.0,
+                workers=2, encoder_lr=0.0001, decoder_lr=0.0001, decay_rate=0.98, grad_clip=5.0, att_reg=1.0,
                 print_freq=100, save_freq=1,
                 backbone="resnet34", # [resnet18, resnet34, squeezenet]
                 checkpoint=None, train_dir="different_measures", val_dir="different_measures",
