@@ -10,7 +10,6 @@ from utils import *
 from dataset import *
 from eval import idx2string, pitch_match, beat_match
 from transformer_decoder import CaptioningTransformer, ImageEncoder
-from CNN_simple import ConvNet
 
 # import argparse
 # import sys
@@ -94,7 +93,7 @@ def main(args):
 
     step = 0
     if checkpoint:
-        checkpoint = torch.load(checkpoint, map_location=torch.device('cpu'))
+        checkpoint = torch.load(checkpoint, map_location="cpu")
         start_epoch = checkpoint['epoch']
         decoder.load_state_dict(checkpoint['decoder_state_dict'])
         decoder_optimizer.load_state_dict(checkpoint['decoder_optimizer_state_dict'])
@@ -124,8 +123,8 @@ def main(args):
     # test_idx = list(range(0, 20000, 20))
     # train_idx = list(set(list(range(0, 22000))) - set(val_idx) - set(test_idx))
 
-    # train_idx = list(set(range(7500)) - set(range(0, 7500, 15)))
-    train_idx = list(range(0, 7500, 15))
+    train_idx = list(set(range(7500)) - set(range(0, 7500, 15)))
+    # train_idx = list(range(0, 7500, 15))
     val_idx = list(range(0, 7500, 15))
     train_data = Dataset(train_dir, train_idx, train_corpus_idx)
     val_data = Dataset(val_dir, val_idx, val_corpus_idx)
@@ -181,7 +180,8 @@ def main(args):
                     seqs, scores = decoder.reinforce(imgs, device, beam_size=5)
 
                     loss = decoder.compute_policy_gradient_batch(seqs[:, 1:], targets, scores, caplens-1)
-                    print(loss)
+                    if i % 50 == 0:
+                        print(loss)
                 # no need to decode at <end>
                 # decode_lengths = (caplens.squeeze(1) - 1).tolist()
 
@@ -376,12 +376,13 @@ def optimizer_to(optim, device):
                         subparam._grad.data = subparam._grad.data.to(device)
 
 if __name__ == '__main__':
-    args = dict(label_type="word", emb_dim=200, decoder_dim=300, att_dim=300, dropout=0.2, start_epoch=0, epochs=200,
+    args = dict(label_type="word", emb_dim=200, decoder_dim=300, att_dim=300, dropout=0.2, start_epoch=0, epochs=220,
                 batch_size=1,
-                workers=0, encoder_lr=0.01, decoder_lr=0.01, decay_rate=0.96, grad_clip=5.0, att_reg=1.0,
-                print_freq=100, save_freq=5,
-                backbone="squeezenet", # [resnet18, resnet34, squeezenet]
-                checkpoint="model/SqueezeNet_NMT_7000/epoch_80.pt", train_dir="different_measures", val_dir="different_measures",
+                workers=0, encoder_lr=0.000005, decoder_lr=0.000005, decay_rate=1, grad_clip=5.0, att_reg=1.0,
+                print_freq=100, save_freq=1,
+                backbone="resnet34", # [resnet18, resnet34, squeezenet]
+                checkpoint= "model/resnet18_transformer-25/epoch_194.pt",#  "model/resnet34_transformer/best.pth.tar"
+                train_dir="different_measures", val_dir="different_measures",
                 train_label="different_measures_strings.txt", val_label="different_measures_strings.txt", model_name="resnet18_transformer",
                 beam_size=10, decode_type="Transformer")
     main(args)

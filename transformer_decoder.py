@@ -6,10 +6,9 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import math
-import numpy as np
 import copy
-import sys
 from models import SqueezeNet, ResNet
+import os
 
 
 class ImageEncoder(nn.Module):
@@ -32,8 +31,8 @@ class ImageEncoder(nn.Module):
         encoder_layer = TransformerEncoderLayer(input_dim=wordvec_dim, num_heads=num_heads)
         self.transformer = TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.apply(self._init_weights)
-        # if transformer_encode == True:
-            # self.proj = nn.Linear(512, wordvec_dim)
+        if transformer_encode == True:
+            self.proj = nn.Linear(512, wordvec_dim)
 
 
     def _init_weights(self, module):
@@ -54,7 +53,7 @@ class ImageEncoder(nn.Module):
 
         x = self.backbone(features)
         if self.transformer_encode:
-            # x = self.proj(x)
+            x = self.proj(x)
             x = self.positional_encoding(x)
             x = self.transformer(x)
 
@@ -215,7 +214,7 @@ class CaptioningTransformer(nn.Module):
             prev_word_inds = top_k_words // self.vocab_size  # (s)
             next_word_inds = top_k_words % self.vocab_size  # (s)
 
-            seqs = torch.cat([seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1)
+            seqs = torch.cat([seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1).to(device)
 
             incomplete_inds = [ind for ind, next_word in enumerate(next_word_inds) if
                                next_word != self._end]
@@ -239,7 +238,7 @@ class CaptioningTransformer(nn.Module):
         if len(complete_seqs) == beam_size:
             complete_seqs = torch.nn.utils.rnn.pad_sequence(complete_seqs, batch_first=True, padding_value=self._null)
 
-            complete_seqs = torch.cat([complete_seqs, self._null * torch.ones(beam_size, 35-complete_seqs.shape[1])], dim=1)
+            complete_seqs = torch.cat([complete_seqs.to(device), self._null * torch.ones(beam_size, 35-complete_seqs.shape[1]).to(device)], dim=1).to(device)
             # complete_seqs_scores = torch.Tensor(complete_seqs_scores)
             # complete_seqs_scores.requires_grad = True
             return complete_seqs, scores_tensor
@@ -393,7 +392,8 @@ class CaptioningTransformer(nn.Module):
 
     def compute_policy_gradient_batch(self, sample, tgt, scores, caps_len):
         reward, baseline = self.compute_baseline(sample, tgt, caps_len)
-        loss = (- (reward.detach() - baseline.detach()) * scores).mean()
+        # print((reward.squeeze().detach() - baseline.squeeze().detach()) * scores)
+        loss = (- (reward.squeeze().detach() - baseline.squeeze().detach()) * scores).mean()
         return loss
 
 
@@ -405,6 +405,7 @@ class CaptioningTransformer(nn.Module):
         reward = reward[:, :caps_len]
         reward = reward.sum(dim=1, keepdim=True)
         reward /= caps_len
+        # reward = reward.gt(0.9).float()
 
         baseline = reward.mean()
 
@@ -722,6 +723,9 @@ class MultiHeadAttention(nn.Module):
 
         attn = (torch.matmul(q.transpose(1, 2), k.permute(0, 2, 3, 1))
                 / math.sqrt(D // self.num_heads))  # N, H, S, T
+        if (S != T) and (not os.path.exists(os.path.join(os.getcwd(), "tensor5.pt"))):
+            print("saved!")
+            torch.save(attn, 'tensor5.pt')
         if attn_mask != None:
             attn = attn.masked_fill(attn_mask == 0, float("-inf"))
         score = F.softmax(attn, dim=-1)
