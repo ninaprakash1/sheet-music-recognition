@@ -6,9 +6,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import math
-import numpy as np
 import copy
-import sys
 from models import SqueezeNet, ResNet
 
 
@@ -268,10 +266,6 @@ class CaptioningTransformer(nn.Module):
 
         N = features.shape[0]
 
-        # score for reinforcement training
-        # scores = torch.zeros((N, 1))
-
-
         # Create an empty captions tensor (where all tokens are NULL).
         captions = self._null * torch.ones((N, max_length), dtype=torch.long).to(device)
 
@@ -287,19 +281,11 @@ class CaptioningTransformer(nn.Module):
             # Predict the next token (ignoring all other time steps).
             output_logits = self.forward(features, partial_caption)
             output_logits = output_logits[:, -1, :]
-            log_probs = torch.log(output_logits)
 
-            # Choose the most likely word ID from the vocabulary.
-            # [N, V] -> [N]
-            # log_probs, word = torch.topk(log_probs, 1, dim=1)
             one_hot = F.gumbel_softmax(output_logits, tau=1, hard=True)
             one_hots[incomplete_inds, t-1, :] = one_hot[incomplete_inds, :]
             _, word = torch.where(one_hot == 1)
-            # scores[incomplete_inds] += log_probs[incomplete_inds]
 
-            # Update our overall caption and our current partial caption.
-            # if len(complete_inds) != 0:
-            #     word[complete_inds] = torch.LongTensor([[self._end]] * len(complete_inds))
             captions[incomplete_inds, t] = word[incomplete_inds]
             complete = [ind for ind, next_word in enumerate(word.squeeze()) if
                                next_word == self._end]
@@ -309,7 +295,6 @@ class CaptioningTransformer(nn.Module):
 
             for idx in new_complete:
                 caps_len[idx] = t+1
-
 
             partial_caption = captions[:, :t+1].clone()
             partial_caption = partial_caption.reshape((N, -1))
@@ -321,6 +306,68 @@ class CaptioningTransformer(nn.Module):
 
         return one_hots, caps_len
 
+    def reinforce(self, features, device, max_decode_length=34, beam_size=5):
+        """
+        let gradient pass through softmax only
+        """
+
+        k = beam_size
+
+        k_prev_words = torch.LongTensor([[self._start]] * k).to(device) # (k, 1)
+
+        seqs = k_prev_words  # (k, 1)
+
+        top_k_scores = torch.zeros(k, 1).to(device)  # (k, 1)
+
+        complete_seqs = list()
+        scores_tensor = torch.zeros(beam_size).to(device)
+
+        # start with the token after <start>
+        for step in range(1, max_decode_length+1):
+
+            output_logits = self.forward(features, seqs)
+            output_logits = output_logits[:, -1, :] # [k, V]
+
+            scores = F.log_softmax(output_logits, dim=1)
+            scores = top_k_scores.expand_as(scores) + scores
+
+            if step == 1:
+                _, top_k_words = scores[0].topk(k, 0, True, True)  # (s)
+            else:
+                _, top_k_words = scores.view(-1).topk(k, 0, True, True)  # (s)
+
+            top_k_scores = scores.view(-1)[top_k_words]
+            prev_word_inds = top_k_words // self.vocab_size  # (s)
+            next_word_inds = top_k_words % self.vocab_size  # (s)
+
+            seqs = torch.cat([seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1).to(device)
+
+            incomplete_inds = [ind for ind, next_word in enumerate(next_word_inds) if
+                               next_word != self._end]
+            complete_inds = list(set(range(len(next_word_inds))) - set(incomplete_inds))
+
+            if len(complete_inds) > 0:
+                complete_seqs.extend(seqs[complete_inds])
+                scores_tensor[beam_size-k:beam_size-k+len(complete_inds)] = top_k_scores[complete_inds]
+            k -= len(complete_inds)
+
+            if k == 0:
+                break
+
+            seqs = seqs[incomplete_inds]
+
+            top_k_scores = top_k_scores[incomplete_inds].unsqueeze(1)
+
+        if len(complete_seqs) == beam_size:
+            complete_seqs = torch.nn.utils.rnn.pad_sequence(complete_seqs, batch_first=True, padding_value=self._null)
+            complete_seqs = torch.cat([complete_seqs.to(device), self._null * torch.ones(beam_size, 35-complete_seqs.shape[1]).to(device)], dim=1).to(device)
+            return complete_seqs, scores_tensor
+        else:
+            complete_seqs.extend(seqs)
+            scores_tensor[beam_size-k:] = top_k_scores.squeeze(1)
+            complete_seqs = torch.nn.utils.rnn.pad_sequence(complete_seqs, batch_first=True, padding_value=self._null)
+
+        return complete_seqs, scores_tensor
 
     def compute_policy_gradient_batch(self, sample, tgt, scores, caps_len):
         with torch.no_grad():
@@ -338,13 +385,6 @@ class CaptioningTransformer(nn.Module):
         reward = reward - T + caps_len
         baseline = reward.mean()
 
-
-        # indicator = (gen == tgt).all(dim=1).float()
-        #
-        # baseline = indicator.sum() / B
-        # baseline.requires_grad = False
-        # reward = indicator.reshape((-1, 1))
-        # reward.requires_grad = False
 
         return reward, baseline
 
@@ -473,9 +513,6 @@ class TransformerEncoderLayer(nn.Module):
         return tgt
 
 
-
-
-
 def clones(module, N):
     "Produce N identical layers."
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
@@ -512,76 +549,56 @@ class TransformerEncoder(nn.Module):
         return output
 
 
-# class PositionalEncoding(nn.Module):
-#     """
-#     Encodes information about the positions of the tokens in the sequence. In
-#     this case, the layer has no learnable parameters, since it is a simple
-#     function of sines and cosines.
-#     """
-#
-#     def __init__(self, embed_dim, dropout=0.1, max_len=1000):
-#         """
-#         Construct the PositionalEncoding layer.
-#
-#         Inputs:
-#          - embed_dim: the size of the embed dimension
-#          - dropout: the dropout value
-#          - max_len: the maximum possible length of the incoming sequence
-#         """
-#         super().__init__()
-#         self.dropout = nn.Dropout(p=dropout)
-#         assert embed_dim % 2 == 0
-#
-#         pe = torch.zeros(1, max_len, embed_dim)
-#
-#         even = torch.arange(0, embed_dim, 2)
-#         even_mat = torch.tensor(list(range(0, max_len))).unsqueeze(1).repeat(1, len(even))
-#         coef = torch.exp(math.log(10000) * -1 * even / embed_dim)
-#         even_mat = even_mat * coef
-#
-#         pe[0, :, 0::2] = torch.sin(even_mat)
-#         pe[0, :, 1::2] = torch.cos(even_mat)
-#
-#         self.register_buffer('pe', pe)
-#
-#     def forward(self, x):
-#         """
-#         Element-wise add positional embeddings to the input sequence.
-#
-#         Inputs:
-#          - x: the sequence fed to the positional encoder model, of shape
-#               (N, S, D), where N is the batch size, S is the sequence length and
-#               D is embed dim
-#         Returns:
-#          - output: the input sequence + positional encodings, of shape (N, S, D)
-#         """
-#         N, S, D = x.shape
-#         sys.stdout.write(str(S) + "\t")
-#         sys.stdout.write(str(x.shape) + "\t")
-#         sys.stdout.write(str(self.pe.shape) + "\t")
-#         sys.stdout.flush()
-#         output = x + self.pe[:, :S, :]
-#         output = self.dropout(output)
-#
-#         return output
 class PositionalEncoding(nn.Module):
+    """
+    Encodes information about the positions of the tokens in the sequence. In
+    this case, the layer has no learnable parameters, since it is a simple
+    function of sines and cosines.
+    """
 
-    def __init__(self, d_model, dropout=0.1, max_len=5000):
-        super(PositionalEncoding, self).__init__()
+    def __init__(self, embed_dim, dropout=0.1, max_len=1000):
+        """
+        Construct the PositionalEncoding layer.
+
+        Inputs:
+         - embed_dim: the size of the embed dimension
+         - dropout: the dropout value
+         - max_len: the maximum possible length of the incoming sequence
+        """
+        super().__init__()
         self.dropout = nn.Dropout(p=dropout)
+        assert embed_dim % 2 == 0
 
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)
+        pe = torch.zeros(1, max_len, embed_dim)
+
+        even = torch.arange(0, embed_dim, 2)
+        even_mat = torch.tensor(list(range(0, max_len))).unsqueeze(1).repeat(1, len(even))
+        coef = torch.exp(math.log(10000) * -1 * even / embed_dim)
+        even_mat = even_mat * coef
+
+        pe[0, :, 0::2] = torch.sin(even_mat)
+        pe[0, :, 1::2] = torch.cos(even_mat)
+
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = x + self.pe[:, :x.size(1), :]
+        """
+        Element-wise add positional embeddings to the input sequence.
 
-        return self.dropout(x)
+        Inputs:
+         - x: the sequence fed to the positional encoder model, of shape
+              (N, S, D), where N is the batch size, S is the sequence length and
+              D is embed dim
+        Returns:
+         - output: the input sequence + positional encodings, of shape (N, S, D)
+        """
+        N, S, D = x.shape
+
+        output = x + self.pe[:, :S, :]
+        output = self.dropout(output)
+
+        return output
+
 
 
 

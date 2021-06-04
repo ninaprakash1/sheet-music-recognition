@@ -1,7 +1,13 @@
+"""
+RNN implementation. based on https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Image-Captioning
+"""
+
+
 import torch
 from torch import nn
 import torchvision
 from torch.nn import functional as F
+
 
 class SqueezeNet(nn.Module):
     def __init__(self, emb_dim=20):
@@ -9,6 +15,7 @@ class SqueezeNet(nn.Module):
 
         model_ft = torchvision.models.squeezenet1_0(pretrained=False)
         self.model = nn.Sequential(*list(model_ft.children())[:-1])
+
 
     def forward(self, x):
         # N, 3, H, W -> N, 3, H/16 -1, W/16 -1
@@ -270,44 +277,3 @@ class RNN_Decoder(nn.Module):
             seq = seqs[i].tolist()
 
         return seq
-
-    # def LSMT_beam_step(self, k_prev_words, features, h, c, k, top_k_scores, seqs, step, complete_seqs, complete_seqs_scores):
-    #     embeddings = self.embedding(k_prev_words).squeeze(1)  # (s, embed_dim)
-    #
-    #     awe, _ = self.attention(features, h)  # (s, encoder_dim), (s, num_pixels)
-    #
-    #     gate = self.sigmoid(self.f_beta(h))  # gating scalar, (s, encoder_dim)
-    #     awe = gate * awe
-    #
-    #     h, c = self.decode_step(torch.cat([embeddings, awe], dim=1), (h, c))  # (s, decoder_dim)
-    #
-    #     scores = self.fc(h)  # (s, vocab_size)
-    #     scores = F.log_softmax(scores, dim=1)
-    #
-    #     scores = top_k_scores.expand_as(scores) + scores  # (s, vocab_size)
-    #
-    #     if step == 1:
-    #         top_k_scores, top_k_words = scores[0].topk(k, 0, True, True)  # (s)
-    #     else:
-    #         # Unroll and find top scores, and their unrolled indices
-    #         top_k_scores, top_k_words = scores.view(-1).topk(k, 0, True, True)  # (s)
-    #
-    #     # Convert unrolled indices to actual indices of scores
-    #     prev_word_inds = top_k_words // self.vocab_size  # (s)
-    #     next_word_inds = top_k_words % self.vocab_size  # (s)
-    #
-    #     # Add new words to sequences
-    #     seqs = torch.cat([seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1)  # (s, step+1)
-    #
-    #     # Which sequences are incomplete (didn't reach <end>)?
-    #     incomplete_inds = [ind for ind, next_word in enumerate(next_word_inds) if
-    #                        next_word != self._end]
-    #     complete_inds = list(set(range(len(next_word_inds))) - set(incomplete_inds))
-    #
-    #     # Set aside complete sequences
-    #     if len(complete_inds) > 0:
-    #         complete_seqs.extend(seqs[complete_inds].tolist())
-    #         complete_seqs_scores.extend(top_k_scores[complete_inds])
-    #     k -= len(complete_inds)  # reduce beam length accordingly
-    #
-    #     state = (k_prev_words, features, h, c, k, top_k_scores, seqs, step, complete_seqs, complete_seqs_scores)

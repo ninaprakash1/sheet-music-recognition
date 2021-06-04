@@ -4,26 +4,12 @@ import torch.optim
 import torch.utils.data
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence
-import torch.nn.functional as F
-from models import ResNet, RNN_Decoder, SqueezeNet
+from models import RNN_Decoder
 from utils import *
 from dataset import *
 from eval import idx2string, pitch_match, beat_match
 from transformer_decoder import CaptioningTransformer, ImageEncoder
 from tensorboardX import SummaryWriter
-
-
-# import argparse
-# import sys
-
-# PYTHON = sys.executable
-# # Set up command line arguments
-# parser = argparse.ArgumentParser()
-# parser.add_argument('-l', '--label_type', default='char',  # 'char' or 'word'
-#                     required=False, help='Specify character or word-level prediction')
-
-
-# TODO an argparse file specifying all default parameters to main().
 
 def main(args):
     """
@@ -59,6 +45,8 @@ def main(args):
     transformer_encode = args["transformer_encode"]
     image_transform = args["image_transform"]
     ensemble = args["ensemble"]
+    train_mode = args["train_mode"]
+    finetune = args["finetune"]
 
     # make checkpoint path
     path = create_checkpoint_dir(model_name)
@@ -123,21 +111,12 @@ def main(args):
     # Loss function
     criterion = nn.CrossEntropyLoss().to(device)
 
+    val_idx = list(set(list(range(0, 20000, 10))) - set(list(range(0, 20000, 40))))
+    test_idx = list(range(0, 20000, 40))
+    train_idx = list(set(list(range(0, 22000))) - set(val_idx) - set(test_idx))
 
-    # val_idx = list(range(1, 20000, 20))
-    # test_idx = list(range(0, 20000, 20))
-    # train_idx = list(set(list(range(0, 22000))) - set(val_idx) - set(test_idx))
-
-    train_idx = list(set(range(7500)) - set(range(0, 7500, 15)))
-    val_idx = list(range(0, 7500, 15))
     train_data = Dataset(train_dir, train_idx, train_corpus_idx, transform=image_transform)
     val_data = Dataset(val_dir, val_idx, val_corpus_idx)
-
-    # split = [500, 3, len(train_data)-503]
-    # split = [len(data)-500, 500, 0]
-    # split = [1, 6999]
-    # split = [4, 3, len(train_data)-7]
-    # train_data, val_data, rest = torch.utils.data.dataset.random_split(train_data, split)
 
     train_loader = torch.utils.data.DataLoader(
         train_data, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
@@ -149,120 +128,146 @@ def main(args):
     beam_loader = torch.utils.data.DataLoader(
         val_data, batch_size=1, shuffle=False, num_workers=workers, pin_memory=True)
 
-    for epoch in range(start_epoch+1, epochs+1):
 
-        batch_time = AverageMeter()
-        data_time = AverageMeter()
-        losses = AverageMeter()
-        top5accs = AverageMeter()
-        EM = AverageMeter()
+    if train_mode:
+        for epoch in range(start_epoch+1, epochs+1):
 
-        start = time.time()
+            if not finetune:
+                losses = AverageMeter()
+                top5accs = AverageMeter()
+                EM = AverageMeter()
 
-        encoder.train()
-        decoder.train()
+            batch_time = AverageMeter()
+            data_time = AverageMeter()
+            start = time.time()
 
-        # Batches
-        with torch.enable_grad(), tqdm(total=len(train_data), position=0, leave=True) as progress_bar:
-            for i, (imgs, caps, caplens) in enumerate(train_loader):
+            encoder.train()
+            decoder.train()
 
-                data_time.update(time.time() - start)
+            # Batches
+            with torch.enable_grad(), tqdm(total=len(train_data), position=0, leave=True) as progress_bar:
+                for i, (imgs, caps, caplens) in enumerate(train_loader):
 
-                imgs = imgs.to(device)
-                caps = caps.to(device)
-                caplens = caplens.to(device)
+                    data_time.update(time.time() - start)
 
-                imgs = encoder(imgs.float())
+                    imgs = imgs.to(device)
+                    caps = caps.to(device)
+                    caplens = caplens.to(device)
 
-                if decode_type == "RNN":
-                    scores, caps_sorted, decode_lengths, alphas, sort_ind = decoder(imgs, caps, caplens, device)
-                    targets = caps_sorted[:, 1:]
-                elif decode_type == "Transformer":
-                    scores = decoder(imgs, caps[:, 0:-1])
-                    targets = caps[:, 1:]
+                    imgs = encoder(imgs.float())
 
-                # no need to decode at <end>
-                decode_lengths = (caplens.squeeze(1) - 1).tolist()
 
-                # more efficient computation
-                scores = pack_padded_sequence(scores, decode_lengths, batch_first=True, enforce_sorted=False)
-                targets = pack_padded_sequence(targets, decode_lengths, batch_first=True, enforce_sorted=False)
+                    if finetune:
+                        targets = caps[:, 1:]
+                        seqs, scores = decoder.reinforce(imgs, device, beam_size=10)
+                        loss = decoder.compute_policy_gradient_batch(seqs[:, 1:], targets, scores, caplens - 1)
+                    else:
+                        if decode_type == "RNN":
+                            scores, caps_sorted, decode_lengths, alphas, sort_ind = decoder(imgs, caps, caplens, device)
+                            targets = caps_sorted[:, 1:]
+                        elif decode_type == "Transformer":
+                            scores = decoder(imgs, caps[:, 0:-1])
+                            targets = caps[:, 1:]
 
-                loss = criterion(scores.data, targets.data)
+                        # no need to decode at <end>
+                        decode_lengths = (caplens.squeeze(1) - 1).tolist()
 
-                if decode_type == "RNN":
-                    loss += att_reg * ((1. - alphas.sum(dim=1)) ** 2).mean()
+                        # more efficient computation
+                        scores = pack_padded_sequence(scores, decode_lengths, batch_first=True, enforce_sorted=False)
+                        targets = pack_padded_sequence(targets, decode_lengths, batch_first=True, enforce_sorted=False)
 
-                decoder_optimizer.zero_grad()
-                encoder_optimizer.zero_grad()
-                loss.backward()
+                        loss = criterion(scores.data, targets.data)
 
-                clip_gradient(decoder_optimizer, grad_clip)
-                clip_gradient(encoder_optimizer, grad_clip)
+                    if decode_type == "RNN":
+                        loss += att_reg * ((1. - alphas.sum(dim=1)) ** 2).mean()
 
-                decoder_optimizer.step()
-                encoder_optimizer.step()
+                    decoder_optimizer.zero_grad()
+                    encoder_optimizer.zero_grad()
+                    loss.backward()
 
-                top5 = accuracy(scores.data, targets.data, 5)
-                losses.update(loss.item(), sum(decode_lengths))
-                top5accs.update(top5, sum(decode_lengths))
-                batch_time.update(time.time() - start)
-                top1 = accuracy(scores.data, targets.data, 1)
-                EM.update(top1, sum(decode_lengths))
+                    clip_gradient(decoder_optimizer, grad_clip)
+                    clip_gradient(encoder_optimizer, grad_clip)
 
-                start = time.time()
+                    decoder_optimizer.step()
+                    encoder_optimizer.step()
 
-                progress_bar.update(batch_size)
-                progress_bar.set_postfix(mode="train", epoch=epoch,
-                                         loss=losses.val, Top5=top5accs.val, EM=EM.val)
+                    if not finetune:
+                        top5 = accuracy(scores.data, targets.data, 5)
+                        losses.update(loss.item(), sum(decode_lengths))
+                        top5accs.update(top5, sum(decode_lengths))
+                        top1 = accuracy(scores.data, targets.data, 1)
+                        EM.update(top1, sum(decode_lengths))
 
-                step += batch_size
+                    batch_time.update(time.time() - start)
 
-                if i != 0 and i % print_freq == 0:
-                    print('Train\t'
-                          'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                          'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                          'Top-5 Accuracy {top5.val:.3f} ({top5.avg:.3f})\t'
-                          'EM {EM.val:.3f}'.format(
-                        batch_time=batch_time,
-                        loss=losses, top5=top5accs, EM=EM))
+                    start = time.time()
 
-                # log to Tensorboard
-                log_train(writer, losses.val, top5accs.val, EM.val, encoder_optimizer.param_groups[0]["lr"],
-                          decoder_optimizer.param_groups[0]["lr"], step)
-        if epoch % 2 == 0:
-            val_loss, val_top5, val_top, em, pitch, beat = validate(val_loader, beam_loader, encoder, decoder, criterion,
-                                                   device, att_reg, epoch, decode_type, beam_size=beam_size, idx2word=idx2word)
+                    if not finetune:
+                        progress_bar.update(batch_size)
+                        progress_bar.set_postfix(mode="train", epoch=epoch,
+                                                 loss=losses.val, Top5=top5accs.val, EM=EM.val)
 
-            log_val(writer, val_loss, val_top5, val_top, em, pitch, beat, step)
+                        if i != 0 and i % print_freq == 0:
+                            print('Train\t'
+                                  'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                                  'Top-5 Accuracy {top5.val:.3f} ({top5.avg:.3f})\t'
+                                  'EM {EM.val:.3f}'.format(
+                                batch_time=batch_time,
+                                loss=losses, top5=top5accs, EM=EM))
 
-            print('\nValidation\t'
-                  'Loss {loss:.4f}\t'
-                  'top5 {top5:.3f}\t'
-                  'EM {top:.3f}\t'
-                  'true EM {em:.3f}\t'
-                  'pitch {pitch: .3f}\t'
-                  'beat {beat: .3f}'.format(
-                loss=val_loss, top5=val_top5, top=val_top, em=em, pitch=pitch, beat=beat))
+                        # log to Tensorboard
+                        log_train(writer, losses.val, top5accs.val, EM.val, encoder_optimizer.param_groups[0]["lr"],
+                                  decoder_optimizer.param_groups[0]["lr"], step)
 
-            if epoch % save_freq == 0:
-                checkpoint_path = os.path.join(path, f'epoch_{epoch}.pt')
-                checkpoint_dict = {
-                    'epoch': epoch,
-                    'encoder_state_dict': encoder.state_dict(),
-                    'decoder_state_dict': decoder.state_dict(),
-                    'encoder_optimizer_state_dict': encoder_optimizer.state_dict(),
-                    'decoder_optimizer_state_dict': decoder_optimizer.state_dict(),
-                    'decoder_lr_scheduler_state_dict': decoder_lr_scheduler.state_dict(),
-                    'encoder_lr_scheduler_state_dict': encoder_lr_scheduler.state_dict(),
-                    'loss': losses.val,
-                    'step': step
-                }
-                checkpoint_saver.save(checkpoint_dict, checkpoint_path, em)
-                print(f'Saved checkpoint: {checkpoint_path}')
+                    step += batch_size
 
-        encoder_lr_scheduler.step()
-        decoder_lr_scheduler.step()
+                val_loss, val_top5, val_top, em, pitch, beat = validate(val_loader, beam_loader, encoder, decoder, criterion,
+                                                       device, att_reg, epoch, decode_type, beam_size=beam_size, idx2word=idx2word)
+
+                log_val(writer, val_loss, val_top5, val_top, em, pitch, beat, step)
+
+                print('\nValidation\t'
+                      'Loss {loss:.4f}\t'
+                      'top5 {top5:.3f}\t'
+                      'EM {top:.3f}\t'
+                      'true EM {em:.3f}\t'
+                      'pitch {pitch: .3f}\t'
+                      'beat {beat: .3f}'.format(
+                    loss=val_loss, top5=val_top5, top=val_top, em=em, pitch=pitch, beat=beat))
+
+                if epoch % save_freq == 0:
+                    checkpoint_path = os.path.join(path, f'epoch_{epoch}.pt')
+                    checkpoint_dict = {
+                        'epoch': epoch,
+                        'encoder_state_dict': encoder.state_dict(),
+                        'decoder_state_dict': decoder.state_dict(),
+                        'encoder_optimizer_state_dict': encoder_optimizer.state_dict(),
+                        'decoder_optimizer_state_dict': decoder_optimizer.state_dict(),
+                        'decoder_lr_scheduler_state_dict': decoder_lr_scheduler.state_dict(),
+                        'encoder_lr_scheduler_state_dict': encoder_lr_scheduler.state_dict(),
+                        'loss': losses.val,
+                        'step': step
+                    }
+                    checkpoint_saver.save(checkpoint_dict, checkpoint_path, em)
+                    print(f'Saved checkpoint: {checkpoint_path}')
+
+            encoder_lr_scheduler.step()
+            decoder_lr_scheduler.step()
+
+    else:
+        val_loss, val_top5, val_top, em, pitch, beat = validate(val_loader, beam_loader, encoder, decoder, criterion,
+                                                                device, att_reg, "val", decode_type,
+                                                                beam_size=beam_size, idx2word=idx2word)
+
+        print('\nValidation\t'
+              'Loss {loss:.4f}\t'
+              'top5 {top5:.3f}\t'
+              'EM {top:.3f}\t'
+              'true EM {em:.3f}\t'
+              'pitch {pitch: .3f}\t'
+              'beat {beat: .3f}'.format(
+            loss=val_loss, top5=val_top5, top=val_top, em=em, pitch=pitch, beat=beat))
 
 
 def validate(val_loader, beam_loader, encoder, decoder, criterion, device, att_reg, epoch, decode_type, beam_size=10, idx2word=None):
@@ -375,12 +380,13 @@ def optimizer_to(optim, device):
 if __name__ == '__main__':
     args = dict(label_type="word", emb_dim=200, decoder_dim=300, att_dim=300, dropout=0.2, start_epoch=0, epochs=200,
                 batch_size=16,
-                workers=2, encoder_lr=0.0001, decoder_lr=0.0001, decay_rate=0.98, grad_clip=5.0, att_reg=1.0,
+                workers=0, encoder_lr=0.0001, decoder_lr=0.0001, decay_rate=0.98, grad_clip=5.0, att_reg=1.0,
                 print_freq=100, save_freq=1,
                 backbone="resnet34", # [resnet18, resnet34, squeezenet]
-                checkpoint=None, train_dir="different_measures", val_dir="different_measures",
-                train_label="different_measures_strings.txt", val_label="different_measures_strings.txt", model_name="multi_supervision",
+                checkpoint=None, train_dir="full_data", val_dir="full_data",
+                train_label="mixed_strings.txt", val_label="mixed_strings.txt", model_name="T-Res44",
                 beam_size=10, decode_type="Transformer", # [RNN, transformer]
-                spatial_encode=True, transformer_encode=True, image_transform=False, ensemble=True
+                spatial_encode=True, transformer_encode=True, image_transform=False, ensemble=False, train_mode=False,
+                finetune=False
                 )
     main(args)
